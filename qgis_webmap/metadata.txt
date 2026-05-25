@@ -1,0 +1,19 @@
+[general]
+name=QGIS Web Map Exporter
+qgisMinimumVersion=3.0
+description=Export selected layers to a standalone HTML web map with preserved symbology
+version=1.0.0
+author=QGIS Web Map Exporter
+email=
+about=Exports selected QGIS layers (vector and raster) to a self-contained HTML file using Leaflet.js. Symbology from single symbol, categorized, and graduated renderers is preserved.
+tracker=
+repository=
+hasProcessingProvider=no
+changelog=
+    1.0.0 - Initial release
+tags=web,export,html,leaflet,map
+homepage=
+category=Web
+icon=icon.png
+experimental=False
+deprecated=False
