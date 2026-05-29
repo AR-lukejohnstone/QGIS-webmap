@@ -3,6 +3,7 @@ import json
 import base64
 import tempfile
 import urllib.request
+from urllib.parse import parse_qs
 
 from qgis.core import (
     QgsMapLayer, QgsWkbTypes, QgsCoordinateReferenceSystem,
@@ -14,31 +15,56 @@ from qgis.core import (
     QgsMapSettings, QgsRectangle
 )
 from qgis.PyQt.QtGui import QColor
-from qgis.PyQt.QtCore import QSize
+from qgis.PyQt.QtCore import QSize, QUrl
+from qgis.PyQt.QtNetwork import QNetworkRequest
 
 
 _WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 
-_PLUGIN_DIR = os.path.dirname(__file__)
-_LIB_DIR    = os.path.join(_PLUGIN_DIR, "lib")
+_PLUGIN_DIR      = os.path.dirname(__file__)
+_LIB_DIR         = os.path.join(_PLUGIN_DIR, "lib")
 _LEAFLET_VERSION = "1.9.4"
-_LEAFLET_CDNS = [
+_LEAFLET_URLS = [
     "https://unpkg.com/leaflet@{v}/dist/leaflet.min.{ext}",
     "https://cdnjs.cloudflare.com/ajax/libs/leaflet/{v}/leaflet.min.{ext}",
 ]
 
 
-def _get_leaflet_assets():
+def _qgis_fetch(url_str: str) -> str | None:
     """
-    Return (css_str, js_str) for Leaflet, for inline embedding.
+    Download text from url_str using QGIS's network stack (respects proxy /
+    auth settings configured in QGIS options) with a fallback to urllib.
+    Returns the decoded text or None on failure.
+    """
+    # QgsBlockingNetworkRequest available since QGIS 3.6
+    try:
+        from qgis.core import QgsBlockingNetworkRequest
+        req = QNetworkRequest(QUrl(url_str))
+        blocker = QgsBlockingNetworkRequest()
+        err = blocker.get(req)
+        if err == QgsBlockingNetworkRequest.NoError:
+            return bytes(blocker.reply().content()).decode("utf-8")
+    except Exception:
+        pass
 
-    Priority:
-      1. Already cached in plugin lib/ directory.
-      2. Download from CDN and cache.
-      3. Return (None, None) — caller falls back to CDN <link>/<script> tags.
+    # Plain urllib fallback
+    try:
+        with urllib.request.urlopen(url_str, timeout=20) as r:
+            return r.read().decode("utf-8")
+    except Exception:
+        pass
+
+    return None
+
+
+def _get_leaflet_assets() -> tuple[str, str] | tuple[None, None]:
     """
-    css_path = os.path.join(_LIB_DIR, f"leaflet-{_LEAFLET_VERSION}.min.css")
-    js_path  = os.path.join(_LIB_DIR, f"leaflet-{_LEAFLET_VERSION}.min.js")
+    Return (css, js) strings for inline embedding, downloading and caching
+    from CDN on first export. Returns (None, None) if unavailable.
+    """
+    v        = _LEAFLET_VERSION
+    css_path = os.path.join(_LIB_DIR, f"leaflet-{v}.min.css")
+    js_path  = os.path.join(_LIB_DIR, f"leaflet-{v}.min.js")
 
     if os.path.exists(css_path) and os.path.exists(js_path):
         with open(css_path, encoding="utf-8") as f:
@@ -47,27 +73,55 @@ def _get_leaflet_assets():
             js = f.read()
         return css, js
 
-    # Attempt download
     os.makedirs(_LIB_DIR, exist_ok=True)
-    v = _LEAFLET_VERSION
-    for cdn_tpl in _LEAFLET_CDNS:
-        try:
-            css_url = cdn_tpl.format(v=v, ext="css")
-            js_url  = cdn_tpl.format(v=v, ext="js")
-            with urllib.request.urlopen(css_url, timeout=15) as r:
-                css = r.read().decode("utf-8")
-            with urllib.request.urlopen(js_url, timeout=15) as r:
-                js = r.read().decode("utf-8")
-            # Cache for next export
+    for tpl in _LEAFLET_URLS:
+        css = _qgis_fetch(tpl.format(v=v, ext="css"))
+        js  = _qgis_fetch(tpl.format(v=v, ext="js"))
+        if css and js:
             with open(css_path, "w", encoding="utf-8") as f:
                 f.write(css)
             with open(js_path, "w", encoding="utf-8") as f:
                 f.write(js)
             return css, js
-        except Exception:
-            continue
 
     return None, None
+
+
+def _parse_wms_source(layer) -> dict | None:
+    """
+    If layer is a WMS/WMTS raster layer, return a dict describing how to
+    add it in Leaflet. Returns None for plain file-based rasters.
+    """
+    provider = layer.dataProvider()
+    if provider is None or provider.name() != "wms":
+        return None
+
+    uri_str = provider.dataSourceUri()
+    params  = parse_qs(uri_str, keep_blank_values=True)
+
+    url = (params.get("url") or params.get("URL") or [None])[0]
+    if not url:
+        return None
+
+    layers  = (params.get("layers")  or [""])[0]
+    format_ = (params.get("format")  or ["image/png"])[0]
+    styles  = (params.get("styles")  or [""])[0]
+    crs     = (params.get("crs") or params.get("CRS") or
+               params.get("srs") or params.get("SRS") or ["EPSG:3857"])[0]
+    version = (params.get("version") or ["1.1.1"])[0]
+
+    # WMTS / XYZ tile layers embed the tile URL template directly
+    ttype = (params.get("type") or ["wms"])[0].lower()
+
+    return {
+        "wmsUrl":     url,
+        "wmsLayers":  layers,
+        "wmsFormat":  format_,
+        "wmsStyles":  styles,
+        "wmsCrs":     crs,
+        "wmsVersion": version,
+        "tileType":   ttype,
+    }
 
 
 def _color_to_hex(color: QColor) -> str:
@@ -337,13 +391,29 @@ class WebMapExporter:
                 })
 
             elif layer.type() == QgsMapLayer.RasterLayer:
-                b64, bounds = _raster_to_base64(layer)
-                layer_defs.append({
-                    "kind": "raster",
-                    "name": layer.name(),
-                    "data": b64,
-                    "bounds": bounds,
-                })
+                wms = _parse_wms_source(layer)
+                if wms:
+                    # Reproject layer extent to WGS-84 for fitBounds
+                    ext = layer.extent()
+                    tr  = QgsCoordinateTransform(layer.crs(), _WGS84, QgsProject.instance())
+                    wgs = tr.transformBoundingBox(ext)
+                    layer_defs.append({
+                        "kind":   "wms",
+                        "name":   layer.name(),
+                        "bounds": [
+                            [wgs.yMinimum(), wgs.xMinimum()],
+                            [wgs.yMaximum(), wgs.xMaximum()],
+                        ],
+                        **wms,
+                    })
+                else:
+                    b64, bounds = _raster_to_base64(layer)
+                    layer_defs.append({
+                        "kind":   "raster",
+                        "name":   layer.name(),
+                        "data":   b64,
+                        "bounds": bounds,
+                    })
 
         self.progress(step + 1)
 
@@ -358,7 +428,7 @@ class WebMapExporter:
         min_x = min_y = float("inf")
         max_x = max_y = float("-inf")
         for ld in layer_defs:
-            if ld["kind"] == "raster":
+            if ld["kind"] in ("raster", "wms"):
                 b = ld["bounds"]
                 min_y = min(min_y, b[0][0])
                 min_x = min(min_x, b[0][1])
@@ -647,6 +717,24 @@ class WebMapExporter:
     return lfl;
   }}
 
+  function addWmsLayer(ld) {{
+    var lfl;
+    if (ld.tileType === 'xyz') {{
+      lfl = L.tileLayer(ld.wmsUrl).addTo(map);
+    }} else {{
+      lfl = L.tileLayer.wms(ld.wmsUrl, {{
+        layers:      ld.wmsLayers,
+        format:      ld.wmsFormat  || 'image/png',
+        styles:      ld.wmsStyles  || '',
+        version:     ld.wmsVersion || '1.1.1',
+        transparent: true,
+        opacity:     1
+      }}).addTo(map);
+    }}
+    leafletLayers.push(lfl);
+    return lfl;
+  }}
+
   function onEachFeature(feature, layer) {{
     if (!feature.properties) return;
     var rows = Object.entries(feature.properties)
@@ -662,7 +750,9 @@ class WebMapExporter:
   var legendItems = [];
   for (var i = 0; i < LAYERS.length; i++) {{
     var ld = LAYERS[i];
-    var lfl = ld.kind === 'vector' ? addVectorLayer(ld) : addRasterLayer(ld);
+    var lfl = ld.kind === 'vector'  ? addVectorLayer(ld)
+            : ld.kind === 'wms'    ? addWmsLayer(ld)
+            : addRasterLayer(ld);
     legendItems.push({{ ld: ld, lfl: lfl }});
   }}
 
@@ -696,7 +786,7 @@ class WebMapExporter:
     displayItems.forEach(function(item) {{
       var ld = item.ld;
       var sm = ld.styleMap || {{}};
-      var geomType = ld.kind === 'raster' ? 'raster' : ld.geomType;
+      var geomType = (ld.kind === 'raster' || ld.kind === 'wms') ? 'raster' : ld.geomType;
 
       // Primary swatch: use first entry or the single style
       var primaryStyle = {{}};
