@@ -12,12 +12,17 @@ from qgis.core import (
     QgsGraduatedSymbolRenderer, QgsRuleBasedRenderer,
     QgsSymbol, QgsSimpleMarkerSymbolLayer, QgsSimpleLineSymbolLayer,
     QgsSimpleFillSymbolLayer, QgsSvgMarkerSymbolLayer,
-    QgsSimpleMarkerSymbolLayerBase, QgsUnitTypes,
-    QgsMapSettings, QgsRectangle
+    QgsUnitTypes, QgsMapSettings, QgsRectangle
 )
 from qgis.PyQt.QtGui import QColor
-from qgis.PyQt.QtCore import QSize, QUrl
+from qgis.PyQt.QtCore import QSize, QUrl, Qt
 from qgis.PyQt.QtNetwork import QNetworkRequest
+
+# QgsSimpleMarkerSymbolLayerBase added in QGIS 3.4
+try:
+    from qgis.core import QgsSimpleMarkerSymbolLayerBase as _QgsSimpleMarkerBase
+except ImportError:
+    _QgsSimpleMarkerBase = None
 
 
 _WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -194,7 +199,9 @@ _SHAPE_ALIASES = {
 def _encode_marker_shape(sl) -> str:
     """Return a normalized shape name string for a simple marker symbol layer."""
     try:
-        raw = QgsSimpleMarkerSymbolLayerBase.encodeShape(sl.shape())
+        if _QgsSimpleMarkerBase is None:
+            return "circle"
+        raw = _QgsSimpleMarkerBase.encodeShape(sl.shape())
         return _SHAPE_ALIASES.get(str(raw).lower(), "circle")
     except Exception:
         return "circle"
@@ -217,16 +224,25 @@ def _extract_symbol_style(symbol) -> dict:
             stroke_color = sl.strokeColor()
             style["fillColor"] = _color_to_hex(fill_color)
             style["fillOpacity"] = round(fill_color.alphaF(), 3)
-            style["color"] = _color_to_hex(stroke_color)
-            style["opacity"] = round(stroke_color.alphaF(), 3)
-            style["weight"] = round(sl.strokeWidth() * 2, 1) or 1
+            try:
+                no_border = sl.strokeStyle() == Qt.NoPen
+            except Exception:
+                no_border = False
+            if no_border:
+                style["color"] = _color_to_hex(fill_color)
+                style["opacity"] = 0.0
+                style["weight"] = 0
+            else:
+                style["color"] = _color_to_hex(stroke_color)
+                style["opacity"] = round(stroke_color.alphaF(), 3)
+                style["weight"] = round(max(0.0, _size_to_px(sl.strokeWidth(), sl.strokeWidthUnit())), 1) or 1
             break
 
         elif isinstance(sl, QgsSimpleLineSymbolLayer):
             color = sl.color()
             style["color"] = _color_to_hex(color)
             style["opacity"] = round(color.alphaF(), 3)
-            style["weight"] = round(sl.width() * 2, 1) or 2
+            style["weight"] = round(max(0.5, _size_to_px(sl.width(), sl.widthUnit())), 1)
             style["fillOpacity"] = 0
             break
 
@@ -311,9 +327,12 @@ def _build_style_map(layer) -> dict:
     if isinstance(renderer, QgsCategorizedSymbolRenderer):
         entries = []
         for cat in renderer.categories():
+            raw_val = cat.value()
+            # Preserve None as JSON null so JS can match null feature properties
+            entry_val = None if raw_val is None else str(raw_val)
             entries.append({
-                "value": str(cat.value()),
-                "label": cat.label() or str(cat.value()),
+                "value": entry_val,
+                "label": cat.label() or (str(raw_val) if raw_val is not None else "(no value)"),
                 "style": _extract_symbol_style(cat.symbol()),
             })
         return {
@@ -898,9 +917,12 @@ class WebMapExporter:
     var t = styleMap.type;
     if (t === 'single') return styleMap.style;
     if (t === 'categorized') {{
-      var val = String(props[styleMap.field]);
+      var propVal = props[styleMap.field];
+      var val = (propVal == null) ? null : String(propVal);
       for (var i = 0; i < styleMap.entries.length; i++) {{
-        if (styleMap.entries[i].value === val) return styleMap.entries[i].style;
+        var ev = styleMap.entries[i].value;
+        var entVal = (ev == null) ? null : String(ev);
+        if (entVal === val) return styleMap.entries[i].style;
       }}
       return styleMap.default || {{}};
     }}
