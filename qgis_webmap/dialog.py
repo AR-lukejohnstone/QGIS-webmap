@@ -44,7 +44,7 @@ class WebMapExportDialog(QDialog):
         options_layout = QVBoxLayout(options_group)
         self.include_basemap_cb = QCheckBox("Include OpenStreetMap basemap")
         self.include_basemap_cb.setChecked(True)
-        self.layer_control_cb = QCheckBox("Include layer toggle control")
+        self.layer_control_cb = QCheckBox("Include legend / layer control (toggles + transparency)")
         self.layer_control_cb.setChecked(True)
         options_layout.addWidget(self.include_basemap_cb)
         options_layout.addWidget(self.layer_control_cb)

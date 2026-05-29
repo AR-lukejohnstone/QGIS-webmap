@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime-downloaded Leaflet assets (fetched + cached on first export)
+qgis_webmap/lib/

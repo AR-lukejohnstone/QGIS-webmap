@@ -12,6 +12,7 @@ from qgis.core import (
     QgsGraduatedSymbolRenderer, QgsRuleBasedRenderer,
     QgsSymbol, QgsSimpleMarkerSymbolLayer, QgsSimpleLineSymbolLayer,
     QgsSimpleFillSymbolLayer, QgsSvgMarkerSymbolLayer,
+    QgsSimpleMarkerSymbolLayerBase, QgsUnitTypes,
     QgsMapSettings, QgsRectangle
 )
 from qgis.PyQt.QtGui import QColor
@@ -134,6 +135,53 @@ def _color_to_rgba(color: QColor) -> str:
     )
 
 
+def _size_to_px(size: float, unit) -> float:
+    """Convert a QGIS symbol size in its render unit to approximate pixels (96 DPI)."""
+    try:
+        if unit == QgsUnitTypes.RenderPixels:
+            return size
+        if unit == QgsUnitTypes.RenderPoints:
+            return size * 96.0 / 72.0
+        if unit == QgsUnitTypes.RenderInches:
+            return size * 96.0
+        # Millimeters (QGIS default) and everything else
+        return size * 96.0 / 25.4
+    except Exception:
+        # Fallback assuming millimeters
+        return size * 96.0 / 25.4
+
+
+# Map QGIS marker shape names to a small set the web map can draw.
+_SHAPE_ALIASES = {
+    "square": "square",
+    "rectangle": "square",
+    "square_with_corners": "square",
+    "rounded_square": "square",
+    "diamond": "diamond",
+    "triangle": "triangle",
+    "equilateral_triangle": "triangle",
+    "star": "star",
+    "regular_star": "star",
+    "pentagon": "pentagon",
+    "hexagon": "hexagon",
+    "octagon": "octagon",
+    "cross": "cross",
+    "cross2": "x",
+    "x": "x",
+    "cross_fill": "square",
+    "circle": "circle",
+}
+
+
+def _encode_marker_shape(sl) -> str:
+    """Return a normalized shape name string for a simple marker symbol layer."""
+    try:
+        raw = QgsSimpleMarkerSymbolLayerBase.encodeShape(sl.shape())
+        return _SHAPE_ALIASES.get(str(raw).lower(), "circle")
+    except Exception:
+        return "circle"
+
+
 def _extract_symbol_style(symbol) -> dict:
     """Extract Leaflet path/marker style from a QGIS symbol."""
     style = {}
@@ -170,15 +218,30 @@ def _extract_symbol_style(symbol) -> dict:
             style["markerColor"] = _color_to_hex(color)
             style["markerOpacity"] = round(color.alphaF(), 3)
             style["markerStrokeColor"] = _color_to_hex(stroke_color)
-            style["markerSize"] = max(4, round(sl.size() * 3))
-            style["markerShape"] = sl.shape()  # enum int
+            try:
+                sw_px = _size_to_px(sl.strokeWidth(), sl.strokeWidthUnit())
+            except Exception:
+                sw_px = 1.0
+            style["markerStrokeWidth"] = round(max(0.0, sw_px), 1)
+            style["markerSize"] = max(4, round(_size_to_px(sl.size(), sl.sizeUnit())))
+            style["markerShape"] = _encode_marker_shape(sl)
+            try:
+                style["markerAngle"] = round(sl.angle(), 1)
+            except Exception:
+                style["markerAngle"] = 0
             break
 
         elif isinstance(sl, QgsSvgMarkerSymbolLayer):
             color = sl.fillColor()
             style["markerColor"] = _color_to_hex(color)
             style["markerOpacity"] = round(color.alphaF(), 3)
-            style["markerSize"] = max(4, round(sl.size() * 3))
+            try:
+                style["markerStrokeColor"] = _color_to_hex(sl.strokeColor())
+            except Exception:
+                pass
+            style["markerSize"] = max(4, round(_size_to_px(sl.size(), sl.sizeUnit())))
+            # SVG markers can't be reproduced exactly; approximate with a square
+            style["markerShape"] = "square"
             break
 
     # Defaults for fill polygons if nothing matched
@@ -579,10 +642,120 @@ class WebMapExporter:
   }}
   .legend-swatch svg {{ display: block; }}
   .legend-layer.hidden .legend-layer-name {{ opacity: 0.45; }}
+  .legend-opacity {{
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px 5px 26px;
+  }}
+  .legend-opacity-label {{ font-size: 10px; color: #888; flex-shrink: 0; }}
+  .legend-opacity input[type=range] {{ flex: 1; height: 14px; cursor: pointer; }}
+  .qgis-marker {{ background: none; border: none; }}
+
+  /* ── Filter toolbar ───────────────────────────────────────────── */
+  #filterbar {{
+    position: absolute;
+    top: 10px; left: 50px;
+    z-index: 1000;
+    background: rgba(255,255,255,0.96);
+    border: 1px solid #bbb;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+    padding: 6px 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    max-width: calc(100vw - 320px);
+    font-size: 12px;
+  }}
+  #filterbar label {{ font-weight: bold; color: #444; }}
+  #filterbar select {{
+    font-size: 12px;
+    padding: 3px 4px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    background: #fff;
+    max-width: 160px;
+  }}
+  #filterbar button {{
+    font-size: 12px;
+    padding: 3px 8px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    background: #fff;
+    cursor: pointer;
+  }}
+  #filterbar button:hover {{ background: #eee; }}
+  #filter-values-wrap {{ position: relative; }}
+  #filter-values-btn {{
+    min-width: 140px;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
+  #filter-values-panel {{
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 2px;
+    background: #fff;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    min-width: 200px;
+    max-width: 280px;
+    z-index: 1100;
+  }}
+  #filter-values-panel.open {{ display: block; }}
+  #filter-values-search {{
+    width: 100%;
+    box-sizing: border-box;
+    border: none;
+    border-bottom: 1px solid #ddd;
+    padding: 6px 8px;
+    font-size: 12px;
+    outline: none;
+  }}
+  #filter-values-list {{
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 4px 0;
+  }}
+  .filter-value-item {{
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    cursor: pointer;
+  }}
+  .filter-value-item:hover {{ background: #f3f3f3; }}
+  .filter-value-item span {{
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
+  .filter-count {{ color: #888; font-size: 11px; }}
 </style>
 </head>
 <body>
 <div id="map"></div>
+<div id="filterbar" style="display:none">
+  <label>Filter</label>
+  <select id="filter-layer" title="Layer"></select>
+  <select id="filter-attr" title="Attribute"></select>
+  <span id="filter-values-wrap">
+    <button id="filter-values-btn" type="button">All values</button>
+    <div id="filter-values-panel">
+      <input id="filter-values-search" type="text" placeholder="Type to search / filter…" autocomplete="off">
+      <div id="filter-values-list"></div>
+    </div>
+  </span>
+  <button id="filter-clear" type="button">Clear</button>
+  <span id="filter-count" class="filter-count"></span>
+</div>
 <div id="legend" style="display:none"></div>
 <script>
 (function() {{
@@ -595,8 +768,9 @@ class WebMapExporter:
   var INCLUDE_LEGEND = {include_legend};
 
   // ── Basemap ──────────────────────────────────────────────────────────────
+  var basemap = null;
   if (INCLUDE_BASEMAP) {{
-    L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+    basemap = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
       maxZoom: 19
     }}).addTo(map);
@@ -607,15 +781,99 @@ class WebMapExporter:
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }}
 
-  function makeCircleMarker(latlng, style) {{
-    return L.circleMarker(latlng, {{
-      radius: (style.markerSize || 8) / 2,
-      fillColor: style.markerColor || '#3388ff',
-      fillOpacity: style.markerOpacity != null ? style.markerOpacity : 0.8,
-      color: style.markerStrokeColor || '#ffffff',
-      weight: 1,
-      opacity: 1
+  // Return the inner SVG element(s) for a marker shape centred at (cx, cy)
+  // with circumradius r. Used by both map markers and legend swatches.
+  function shapeSvgInner(shape, cx, cy, r, fill, fillOp, stroke, strokeW) {{
+    var attrs = ' fill="' + escHtml(fill) + '" fill-opacity="' + fillOp + '"'
+              + ' stroke="' + escHtml(stroke) + '" stroke-width="' + strokeW + '"';
+    function poly(pts) {{
+      return '<polygon points="' + pts.map(function(p) {{ return p[0] + ',' + p[1]; }}).join(' ') + '"' + attrs + '/>';
+    }}
+    function regular(n, rot) {{
+      var pts = [];
+      for (var i = 0; i < n; i++) {{
+        var a = rot + i * 2 * Math.PI / n;
+        pts.push([(cx + r * Math.sin(a)).toFixed(2), (cy - r * Math.cos(a)).toFixed(2)]);
+      }}
+      return poly(pts);
+    }}
+    function starPts(points, outer, inner, rot) {{
+      var pts = [];
+      for (var i = 0; i < points * 2; i++) {{
+        var rad = (i % 2 === 0) ? outer : inner;
+        var a = rot + i * Math.PI / points;
+        pts.push([(cx + rad * Math.sin(a)).toFixed(2), (cy - rad * Math.cos(a)).toFixed(2)]);
+      }}
+      return poly(pts);
+    }}
+    switch (shape) {{
+      case 'square':
+        return '<rect x="' + (cx - r) + '" y="' + (cy - r) + '" width="' + (2 * r) + '" height="' + (2 * r) + '"' + attrs + '/>';
+      case 'diamond':
+        return poly([[cx, cy - r], [cx + r, cy], [cx, cy + r], [cx - r, cy]]);
+      case 'triangle':
+        return regular(3, 0);
+      case 'pentagon':
+        return regular(5, 0);
+      case 'hexagon':
+        return regular(6, 0);
+      case 'octagon':
+        return regular(8, Math.PI / 8);
+      case 'star':
+        return starPts(5, r, r * 0.5, 0);
+      case 'cross':
+        return '<path d="M' + cx + ' ' + (cy - r) + ' V' + (cy + r) + ' M' + (cx - r) + ' ' + cy + ' H' + (cx + r) + '"'
+             + ' stroke="' + escHtml(stroke !== 'none' ? stroke : fill) + '" stroke-width="' + Math.max(1.5, strokeW * 2) + '" fill="none"/>';
+      case 'x':
+        return '<path d="M' + (cx - r) + ' ' + (cy - r) + ' L' + (cx + r) + ' ' + (cy + r)
+             + ' M' + (cx + r) + ' ' + (cy - r) + ' L' + (cx - r) + ' ' + (cy + r) + '"'
+             + ' stroke="' + escHtml(stroke !== 'none' ? stroke : fill) + '" stroke-width="' + Math.max(1.5, strokeW * 2) + '" fill="none"/>';
+      default: // circle
+        return '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '"' + attrs + '/>';
+    }}
+  }}
+
+  function makeMarker(latlng, style, paneName) {{
+    var size = style.markerSize || 8;
+    var shape = style.markerShape || 'circle';
+    var fill = style.markerColor || '#3388ff';
+    var fillOp = style.markerOpacity != null ? style.markerOpacity : 0.9;
+    var stroke = style.markerStrokeColor || '#ffffff';
+    var strokeW = style.markerStrokeWidth != null ? style.markerStrokeWidth : 1;
+
+    // Circles scale crisply with L.circleMarker
+    if (shape === 'circle') {{
+      var copts = {{
+        radius: size / 2,
+        fillColor: fill,
+        fillOpacity: fillOp,
+        color: stroke,
+        weight: strokeW,
+        opacity: 1
+      }};
+      if (paneName) copts.pane = paneName;
+      return L.circleMarker(latlng, copts);
+    }}
+
+    // All other shapes drawn as an inline-SVG divIcon
+    var pad = strokeW + 2;
+    var box = size + pad * 2;
+    var c = box / 2;
+    var r = size / 2;
+    var inner = shapeSvgInner(shape, c, c, r, fill, fillOp, stroke, strokeW);
+    var angle = style.markerAngle || 0;
+    var rot = angle ? ' transform="rotate(' + angle + ' ' + c + ' ' + c + ')"' : '';
+    var html = '<svg width="' + box + '" height="' + box + '" xmlns="http://www.w3.org/2000/svg">'
+             + '<g' + rot + '>' + inner + '</g></svg>';
+    var icon = L.divIcon({{
+      html: html,
+      className: 'qgis-marker',
+      iconSize: [box, box],
+      iconAnchor: [c, c]
     }});
+    var mopts = {{ icon: icon }};
+    if (paneName) mopts.pane = paneName;
+    return L.marker(latlng, mopts);
   }}
 
   function resolveStyle(styleMap, props) {{
@@ -659,11 +917,13 @@ class WebMapExporter:
     if (geomType === 'point') {{
       var r = Math.min(6, Math.max(3, (style.markerSize || 8) / 2));
       var cx = W / 2, cy = H / 2;
-      svg += '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '"'
-          + ' fill="' + escHtml(style.markerColor || '#3388ff') + '"'
-          + ' fill-opacity="' + (style.markerOpacity != null ? style.markerOpacity : 0.8) + '"'
-          + ' stroke="' + escHtml(style.markerStrokeColor || '#fff') + '"'
-          + ' stroke-width="1"/>';
+      svg += shapeSvgInner(
+        style.markerShape || 'circle', cx, cy, r,
+        style.markerColor || '#3388ff',
+        style.markerOpacity != null ? style.markerOpacity : 0.9,
+        style.markerStrokeColor || '#666',
+        Math.min(1.5, style.markerStrokeWidth != null ? style.markerStrokeWidth : 1)
+      );
     }} else if (geomType === 'line') {{
       var w = Math.min(5, Math.max(1, style.weight || 2));
       svg += '<line x1="1" y1="' + (H/2) + '" x2="' + (W-1) + '" y2="' + (H/2) + '"'
@@ -687,52 +947,61 @@ class WebMapExporter:
   }}
 
   // ── Layer builder ────────────────────────────────────────────────────────
-  var leafletLayers = [];
-
-  function addVectorLayer(ld) {{
-    var lfl;
+  function buildVectorLayer(item) {{
+    var ld = item.ld;
+    var opts = {{
+      pane: item.paneName,
+      onEachFeature: onEachFeature,
+      filter: function(feature) {{
+        return item.filterFn ? item.filterFn(feature) : true;
+      }}
+    }};
     if (ld.geomType === 'point') {{
-      lfl = L.geoJSON(ld.geojson, {{
-        pointToLayer: function(feature, latlng) {{
-          return makeCircleMarker(latlng, resolveStyle(ld.styleMap, feature.properties || {{}}));
-        }},
-        onEachFeature: onEachFeature
-      }});
+      opts.pointToLayer = function(feature, latlng) {{
+        return makeMarker(latlng, resolveStyle(ld.styleMap, feature.properties || {{}}), item.paneName);
+      }};
     }} else {{
-      lfl = L.geoJSON(ld.geojson, {{
-        style: function(feature) {{
-          return leafletPathStyle(resolveStyle(ld.styleMap, feature.properties || {{}}));
-        }},
-        onEachFeature: onEachFeature
-      }});
+      opts.style = function(feature) {{
+        return leafletPathStyle(resolveStyle(ld.styleMap, feature.properties || {{}}));
+      }};
     }}
-    lfl.addTo(map);
-    leafletLayers.push(lfl);
-    return lfl;
+    return L.geoJSON(ld.geojson, opts);
   }}
 
-  function addRasterLayer(ld) {{
-    var lfl = L.imageOverlay('data:image/png;base64,' + ld.data, ld.bounds, {{opacity: 1}}).addTo(map);
-    leafletLayers.push(lfl);
-    return lfl;
+  function buildRasterLayer(item) {{
+    return L.imageOverlay('data:image/png;base64,' + item.ld.data, item.ld.bounds, {{
+      opacity: 1, pane: item.paneName
+    }});
   }}
 
-  function addWmsLayer(ld) {{
-    var lfl;
+  function buildWmsLayer(item) {{
+    var ld = item.ld;
     if (ld.tileType === 'xyz') {{
-      lfl = L.tileLayer(ld.wmsUrl).addTo(map);
-    }} else {{
-      lfl = L.tileLayer.wms(ld.wmsUrl, {{
-        layers:      ld.wmsLayers,
-        format:      ld.wmsFormat  || 'image/png',
-        styles:      ld.wmsStyles  || '',
-        version:     ld.wmsVersion || '1.1.1',
-        transparent: true,
-        opacity:     1
-      }}).addTo(map);
+      return L.tileLayer(ld.wmsUrl, {{ pane: item.paneName }});
     }}
-    leafletLayers.push(lfl);
-    return lfl;
+    return L.tileLayer.wms(ld.wmsUrl, {{
+      layers:      ld.wmsLayers,
+      format:      ld.wmsFormat  || 'image/png',
+      styles:      ld.wmsStyles  || '',
+      version:     ld.wmsVersion || '1.1.1',
+      transparent: true,
+      opacity:     1,
+      pane:        item.paneName
+    }});
+  }}
+
+  function buildLayer(item) {{
+    if (item.ld.kind === 'vector') return buildVectorLayer(item);
+    if (item.ld.kind === 'wms')    return buildWmsLayer(item);
+    return buildRasterLayer(item);
+  }}
+
+  // Rebuild a layer in place (used after a filter change), preserving visibility.
+  function rebuildLayer(item) {{
+    var wasVisible = item.visible;
+    if (item.lfl) map.removeLayer(item.lfl);
+    item.lfl = buildLayer(item);
+    if (wasVisible) item.lfl.addTo(map);
   }}
 
   function onEachFeature(feature, layer) {{
@@ -746,14 +1015,21 @@ class WebMapExporter:
     if (rows) layer.bindPopup('<table style="font-size:13px;border-collapse:collapse">' + rows + '</table>');
   }}
 
-  // Build Leaflet layers and collect metadata for legend
+  // Build Leaflet layers and collect metadata for legend.
+  // Each layer gets a dedicated map pane so its opacity can be controlled
+  // uniformly (works for vector markers, paths, rasters and WMS alike).
   var legendItems = [];
   for (var i = 0; i < LAYERS.length; i++) {{
-    var ld = LAYERS[i];
-    var lfl = ld.kind === 'vector'  ? addVectorLayer(ld)
-            : ld.kind === 'wms'    ? addWmsLayer(ld)
-            : addRasterLayer(ld);
-    legendItems.push({{ ld: ld, lfl: lfl }});
+    var paneName = 'layerPane' + i;
+    map.createPane(paneName);
+    map.getPane(paneName).style.zIndex = 400 + i;
+    var item = {{
+      ld: LAYERS[i], paneName: paneName, visible: true,
+      filterFn: null, lfl: null, index: i
+    }};
+    item.lfl = buildLayer(item);
+    item.lfl.addTo(map);
+    legendItems.push(item);
   }}
 
   // ── Legend panel ─────────────────────────────────────────────────────────
@@ -780,7 +1056,7 @@ class WebMapExporter:
       }});
     }});
 
-    // Legend items are shown top-to-bottom (reverse of leafletLayers order)
+    // Legend items are shown top-to-bottom (reverse of draw order)
     var displayItems = legendItems.slice().reverse();
 
     displayItems.forEach(function(item) {{
@@ -859,19 +1135,268 @@ class WebMapExporter:
       }});
 
       layerDiv.appendChild(row);
+
+      // Opacity / transparency slider
+      var opRow = document.createElement('div');
+      opRow.className = 'legend-opacity';
+      var opLabel = document.createElement('span');
+      opLabel.className = 'legend-opacity-label';
+      opLabel.textContent = 'Opacity';
+      var slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = '0'; slider.max = '100'; slider.value = '100';
+      slider.title = 'Layer transparency';
+      slider.addEventListener('input', function() {{
+        setLayerOpacity(item, parseInt(slider.value, 10) / 100);
+      }});
+      opRow.appendChild(opLabel);
+      opRow.appendChild(slider);
+      layerDiv.appendChild(opRow);
+
       if (entriesDiv) layerDiv.appendChild(entriesDiv);
       body.appendChild(layerDiv);
       item.checkbox = cb;
       item.layerDiv = layerDiv;
     }});
+
+    // ── Basemap entry (OpenStreetMap) with transparency slider ───────────────
+    if (basemap) {{
+      var bDiv = document.createElement('div');
+      bDiv.className = 'legend-layer';
+
+      var bRow = document.createElement('div');
+      bRow.className = 'legend-layer-row';
+
+      var bCb = document.createElement('input');
+      bCb.type = 'checkbox';
+      bCb.checked = true;
+      bCb.title = 'Toggle basemap';
+      bCb.addEventListener('change', function() {{
+        if (bCb.checked) basemap.addTo(map);
+        else map.removeLayer(basemap);
+        bDiv.classList.toggle('hidden', !bCb.checked);
+      }});
+
+      var bSwatch = document.createElement('span');
+      bSwatch.className = 'legend-swatch';
+      bSwatch.innerHTML = '<svg width="20" height="16" xmlns="http://www.w3.org/2000/svg">'
+        + '<rect x="1" y="1" width="18" height="14" fill="#e8e4dc" stroke="#bbb"/>'
+        + '<path d="M1 11 L7 6 L11 9 L19 3" stroke="#8bbf8b" stroke-width="1.5" fill="none"/>'
+        + '<circle cx="14" cy="11" r="1.5" fill="#7a9fd0"/></svg>';
+
+      var bName = document.createElement('span');
+      bName.className = 'legend-layer-name';
+      bName.textContent = 'OpenStreetMap';
+      bName.title = 'OpenStreetMap basemap';
+
+      bRow.appendChild(bCb);
+      bRow.appendChild(bSwatch);
+      bRow.appendChild(bName);
+      bDiv.appendChild(bRow);
+
+      var bOpRow = document.createElement('div');
+      bOpRow.className = 'legend-opacity';
+      var bOpLabel = document.createElement('span');
+      bOpLabel.className = 'legend-opacity-label';
+      bOpLabel.textContent = 'Opacity';
+      var bSlider = document.createElement('input');
+      bSlider.type = 'range';
+      bSlider.min = '0'; bSlider.max = '100'; bSlider.value = '100';
+      bSlider.title = 'Basemap transparency';
+      bSlider.addEventListener('input', function() {{
+        basemap.setOpacity(parseInt(bSlider.value, 10) / 100);
+      }});
+      bOpRow.appendChild(bOpLabel);
+      bOpRow.appendChild(bSlider);
+      bDiv.appendChild(bOpRow);
+
+      body.appendChild(bDiv);
+    }}
   }}
 
   function setLayerVisible(item, visible) {{
+    item.visible = visible;
     if (visible) item.lfl.addTo(map);
     else map.removeLayer(item.lfl);
     if (item.checkbox) item.checkbox.checked = visible;
     if (item.layerDiv) item.layerDiv.classList.toggle('hidden', !visible);
   }}
+
+  function setLayerOpacity(item, factor) {{
+    var pane = map.getPane(item.paneName);
+    if (pane) pane.style.opacity = factor;
+  }}
+
+  // ── Filter toolbar ─────────────────────────────────────────────────────────
+  (function initFilter() {{
+    var vectorItems = legendItems.filter(function(it) {{ return it.ld.kind === 'vector'; }});
+    if (vectorItems.length === 0) return;
+
+    var bar          = document.getElementById('filterbar');
+    var layerSel     = document.getElementById('filter-layer');
+    var attrSel      = document.getElementById('filter-attr');
+    var valuesBtn    = document.getElementById('filter-values-btn');
+    var valuesPanel  = document.getElementById('filter-values-panel');
+    var valuesSearch = document.getElementById('filter-values-search');
+    var valuesList   = document.getElementById('filter-values-list');
+    var clearBtn     = document.getElementById('filter-clear');
+    var countEl      = document.getElementById('filter-count');
+    bar.style.display = 'flex';
+
+    // Populate layer dropdown (value = index into legendItems)
+    vectorItems.forEach(function(it) {{
+      var o = document.createElement('option');
+      o.value = it.index;
+      o.textContent = it.ld.name;
+      layerSel.appendChild(o);
+    }});
+
+    function currentItem() {{
+      return legendItems[parseInt(layerSel.value, 10)];
+    }}
+
+    function checkedValues() {{
+      var out = [];
+      Array.prototype.forEach.call(valuesList.querySelectorAll('input:checked'), function(c) {{
+        out.push(c.value);
+      }});
+      return out;
+    }}
+
+    function updateValuesBtn() {{
+      var sel = checkedValues();
+      if (sel.length) valuesBtn.textContent = sel.length + ' selected';
+      else if (valuesSearch.value.trim()) valuesBtn.textContent = 'contains: ' + valuesSearch.value.trim();
+      else valuesBtn.textContent = 'All values';
+    }}
+
+    function updateCount(item) {{
+      var total = item.ld.geojson.features.length;
+      var shown = item.filterFn ? item.ld.geojson.features.filter(item.filterFn).length : total;
+      countEl.textContent = shown + ' / ' + total;
+    }}
+
+    function clearOtherFilters(keep) {{
+      legendItems.forEach(function(it) {{
+        if (it !== keep && it.filterFn) {{ it.filterFn = null; rebuildLayer(it); }}
+      }});
+    }}
+
+    function applyFilter() {{
+      var item = currentItem();
+      if (!item) return;
+      var attr = attrSel.value;
+      var search = valuesSearch.value.trim().toLowerCase();
+      var selected = checkedValues();
+      if (!attr || (selected.length === 0 && !search)) {{
+        item.filterFn = null;
+      }} else {{
+        item.filterFn = function(feature) {{
+          var v = (feature.properties || {{}})[attr];
+          var sv = (v == null ? '' : String(v));
+          if (selected.length) return selected.indexOf(sv) !== -1;
+          return sv.toLowerCase().indexOf(search) !== -1;
+        }};
+      }}
+      rebuildLayer(item);
+      updateCount(item);
+    }}
+
+    function populateAttrs() {{
+      var item = currentItem();
+      attrSel.innerHTML = '';
+      if (!item) return;
+      var feats = item.ld.geojson.features;
+      var keys = [], seen = {{}};
+      for (var i = 0; i < Math.min(feats.length, 50); i++) {{
+        var p = feats[i].properties || {{}};
+        for (var k in p) {{ if (!(k in seen)) {{ seen[k] = 1; keys.push(k); }} }}
+      }}
+      keys.forEach(function(k) {{
+        var o = document.createElement('option');
+        o.value = k; o.textContent = k;
+        attrSel.appendChild(o);
+      }});
+    }}
+
+    function populateValues() {{
+      var item = currentItem();
+      var attr = attrSel.value;
+      valuesList.innerHTML = '';
+      valuesSearch.value = '';
+      if (!item || !attr) {{ updateValuesBtn(); return; }}
+      var feats = item.ld.geojson.features;
+      var seen = {{}}, vals = [];
+      for (var i = 0; i < feats.length; i++) {{
+        var v = (feats[i].properties || {{}})[attr];
+        var sv = (v == null ? '' : String(v));
+        if (!(sv in seen)) {{ seen[sv] = 1; vals.push(sv); }}
+        if (vals.length > 2000) break;
+      }}
+      vals.sort(function(a, b) {{
+        var na = parseFloat(a), nb = parseFloat(b);
+        if (!isNaN(na) && !isNaN(nb)) return na - nb;
+        return a < b ? -1 : (a > b ? 1 : 0);
+      }});
+      vals.forEach(function(val) {{
+        var lab = document.createElement('label');
+        lab.className = 'filter-value-item';
+        var c = document.createElement('input');
+        c.type = 'checkbox'; c.value = val;
+        c.addEventListener('change', function() {{ applyFilter(); updateValuesBtn(); }});
+        var s = document.createElement('span');
+        s.textContent = (val === '' ? '(empty)' : val);
+        s.title = val;
+        lab.appendChild(c); lab.appendChild(s);
+        valuesList.appendChild(lab);
+      }});
+      updateValuesBtn();
+    }}
+
+    // Events
+    layerSel.addEventListener('change', function() {{
+      var item = currentItem();
+      clearOtherFilters(item);
+      populateAttrs();
+      populateValues();
+      applyFilter();
+    }});
+    attrSel.addEventListener('change', function() {{
+      populateValues();
+      applyFilter();
+    }});
+    valuesSearch.addEventListener('input', function() {{
+      var q = valuesSearch.value.trim().toLowerCase();
+      Array.prototype.forEach.call(valuesList.children, function(el) {{
+        el.style.display = el.textContent.toLowerCase().indexOf(q) !== -1 ? '' : 'none';
+      }});
+      applyFilter();
+      updateValuesBtn();
+    }});
+    valuesBtn.addEventListener('click', function() {{
+      valuesPanel.classList.toggle('open');
+    }});
+    document.addEventListener('click', function(e) {{
+      if (!document.getElementById('filter-values-wrap').contains(e.target)) {{
+        valuesPanel.classList.remove('open');
+      }}
+    }});
+    clearBtn.addEventListener('click', function() {{
+      valuesSearch.value = '';
+      Array.prototype.forEach.call(valuesList.querySelectorAll('input:checked'), function(c) {{
+        c.checked = false;
+      }});
+      Array.prototype.forEach.call(valuesList.children, function(el) {{ el.style.display = ''; }});
+      applyFilter();
+      updateValuesBtn();
+    }});
+
+    // Initialise with the first vector layer
+    populateAttrs();
+    populateValues();
+    var first = currentItem();
+    if (first) updateCount(first);
+  }})();
 
   // Fit map to data
   try {{ map.fitBounds(bounds, {{padding: [20, 20]}}); }}

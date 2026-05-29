@@ -4,17 +4,27 @@ A QGIS 3 plugin that exports selected layers to a **standalone HTML web map** po
 
 ## Features
 
-- Export **vector layers** (point, line, polygon) as embedded GeoJSON with Leaflet path styles
+- Export **vector layers** (point, line, polygon) as embedded GeoJSON with Leaflet styles
 - Export **raster layers** as base64-encoded PNG image overlays
+- Export **WMS / WMTS / XYZ tile layers** as live Leaflet tile layers (streamed from the server)
 - Preserves QGIS symbology:
   - Single symbol renderers (fill colour, stroke, weight)
   - Categorised renderers (per-category colours)
   - Graduated renderers (per-range colours)
   - Rule-based renderers (first-rule fallback)
-- Optional OpenStreetMap basemap
-- Optional layer toggle control
+  - **Marker shapes** — circle, square, diamond, triangle, pentagon, hexagon,
+    octagon, star, cross and X (with size, stroke and rotation)
+- **Legend / table of contents** with colour swatches, per-class breakdown,
+  per-layer visibility toggles and **transparency sliders** — including the
+  OpenStreetMap basemap
+- **Filter toolbar**: pick a layer → an attribute → then select one or more of
+  its unique values, or type free text to substring-match. Live feature count.
+- Leaflet is embedded inline, so the exported file works **fully offline**
+  (file-based layers); WMS/XYZ layers and the OSM basemap stream over the web
+- Downloads use QGIS's own network stack, so corporate proxy / auth settings
+  configured in QGIS are respected
 - Click features to see a popup with all attribute values
-- Output is a **single `.html` file** — no server required, works offline (basemap tiles require internet)
+- Output is a **single `.html` file** — no server required
 
 ## Requirements
 
