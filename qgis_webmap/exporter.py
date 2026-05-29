@@ -111,6 +111,37 @@ def _get_leaflet_assets() -> tuple[str, str] | tuple[None, None]:
     return None, None
 
 
+# ── Plugin asset specs ────────────────────────────────────────────────────────
+_PLUGIN_SPECS = {
+    "fullscreen":  ("fullscreen.min.css",  "fullscreen.min.js"),
+    "minimap":     ("minimap.min.css",     "minimap.min.js"),
+    "search":      ("search.min.css",      "search.min.js"),
+    "contextmenu": ("contextmenu.min.css", "contextmenu.min.js"),
+    "sidebar":     ("sidebar.min.css",     "sidebar.min.js"),
+    "measure":     ("measure.min.css",     "measure.min.js"),
+    "geoman":      ("geoman.min.css",      "geoman.min.js"),
+}
+
+
+def _load_plugin_assets() -> dict:
+    """
+    Return {name: (css_str, js_str)} for each plugin whose vendor files exist.
+    Missing plugins degrade silently — JS guards (typeof checks) handle absence.
+    """
+    vendor = os.path.join(_PLUGIN_DIR, "vendor")
+    result = {}
+    for name, (css_file, js_file) in _PLUGIN_SPECS.items():
+        css_path = os.path.join(vendor, css_file)
+        js_path  = os.path.join(vendor, js_file)
+        if os.path.exists(css_path) and os.path.exists(js_path):
+            with open(css_path, encoding="utf-8") as f:
+                css = f.read()
+            with open(js_path, encoding="utf-8") as f:
+                js = f.read()
+            result[name] = (css, js)
+    return result
+
+
 def _parse_wms_source(layer) -> dict | None:
     """
     If layer is a WMS/WMTS raster layer, return a dict describing how to
@@ -573,6 +604,28 @@ class WebMapExporter:
                 ' crossorigin=""></script>'
             )
 
+        # Plugin assets — each is optional; JS typeof guards handle absence
+        _plugins = _load_plugin_assets()
+
+        def _plugin_block(name: str) -> str:
+            if name not in _plugins:
+                return ""
+            css, js = _plugins[name]
+            return (
+                "<style>\n" + css + "\n</style>\n"
+                "<script>\n" + js.replace("</", "<\\/") + "\n</script>"
+            )
+
+        plugin_heads = "\n".join(filter(bool, [
+            _plugin_block("fullscreen"),
+            _plugin_block("minimap"),
+            _plugin_block("search"),
+            _plugin_block("contextmenu"),
+            _plugin_block("sidebar"),
+            _plugin_block("measure"),
+            _plugin_block("geoman"),
+        ]))
+
         return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -580,6 +633,7 @@ class WebMapExporter:
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QGIS Web Map</title>
 {leaflet_head}
+{plugin_heads}
 <style>
   html, body {{ margin: 0; padding: 0; height: 100%; font-family: sans-serif; }}
   #map {{ height: 100%; width: 100%; }}
@@ -797,10 +851,105 @@ class WebMapExporter:
     background: #dde8ff;
     border-color: rgba(50,100,255,0.4);
   }}
+
+  /* ── Brand watermark ──────────────────────────────────────────── */
+  #brand-watermark {{
+    position: absolute;
+    bottom: 28px; right: 10px;
+    z-index: 999;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.88);
+    border: 1px solid rgba(0,0,0,0.12);
+    border-radius: 4px;
+    padding: 4px 8px 4px 6px;
+    pointer-events: none;
+    user-select: none;
+  }}
+  #brand-watermark svg {{ display: block; flex-shrink: 0; }}
+  #brand-watermark span {{
+    font-family: Arial, sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: #003057;
+    line-height: 1;
+  }}
+
+  /* ── Custom ruler control ──────────────────────────────────────── */
+  .leaflet-ruler-btn {{
+    background: white url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Crect x='2' y='8' width='16' height='4' rx='1' fill='none' stroke='%23555' stroke-width='1.2'/%3E%3Cline x1='5' y1='8' x2='5' y2='6' stroke='%23555' stroke-width='1'/%3E%3Cline x1='9' y1='8' x2='9' y2='6.5' stroke='%23555' stroke-width='1'/%3E%3Cline x1='13' y1='8' x2='13' y2='6' stroke='%23555' stroke-width='1'/%3E%3C/svg%3E") center/20px no-repeat;
+    cursor: pointer;
+  }}
+  .leaflet-ruler-tooltip {{
+    background: rgba(0,0,0,0.75);
+    color: #fff;
+    padding: 3px 7px;
+    border-radius: 4px;
+    font-size: 12px;
+    white-space: nowrap;
+    pointer-events: none;
+  }}
+  .leaflet-ruler-active {{ cursor: crosshair !important; }}
+
+  /* ── Sidebar custom tweaks ─────────────────────────────────────── */
+  .leaflet-sidebar .feature-table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }}
+  .leaflet-sidebar .feature-table th {{
+    text-align: left;
+    padding: 3px 8px 3px 0;
+    color: #555;
+    font-weight: 600;
+    white-space: nowrap;
+    vertical-align: top;
+  }}
+  .leaflet-sidebar .feature-table td {{
+    padding: 3px 0;
+    word-break: break-word;
+    color: #222;
+  }}
 </style>
 </head>
 <body>
+<div id="sidebar" class="leaflet-sidebar collapsed">
+  <div class="leaflet-sidebar-tabs">
+    <ul role="tablist">
+      <li><a href="#sb-info"  role="tab" title="Feature info">&#9432;</a></li>
+      <li><a href="#sb-draw" role="tab" title="Draw features">&#9998;</a></li>
+    </ul>
+    <ul role="tablist"></ul>
+  </div>
+  <div class="leaflet-sidebar-content">
+    <div class="leaflet-sidebar-pane" id="sb-info">
+      <h1 class="leaflet-sidebar-header">Feature Info<span class="leaflet-sidebar-close">&#10005;</span></h1>
+      <div id="feature-info-content" style="padding:12px;font-size:13px;color:#666">
+        Click a map feature to see its attributes here.
+      </div>
+    </div>
+    <div class="leaflet-sidebar-pane" id="sb-draw">
+      <h1 class="leaflet-sidebar-header">Draw Features<span class="leaflet-sidebar-close">&#10005;</span></h1>
+      <div style="padding:12px;font-size:13px;color:#555">
+        <p style="margin:0 0 8px">Use the drawing controls on the left to sketch features on the map.</p>
+        <p id="draw-count" style="margin:0 0 10px;color:#333"></p>
+        <button id="draw-export-btn" style="font-size:12px;padding:5px 12px;border:1px solid #ccc;border-radius:3px;cursor:pointer;background:#fff">Export drawn features (GeoJSON)</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div id="map"></div>
+<div id="brand-watermark">
+  <!-- AtkinsRealis wordmark (replace svg with official asset if available) -->
+  <svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
+    <rect width="22" height="22" rx="3" fill="#003057"/>
+    <path d="M4 16 L11 5 L18 16 H14 L11 11 L8 16 Z" fill="#00a9a0"/>
+    <rect x="7" y="13" width="8" height="1.5" fill="#003057"/>
+  </svg>
+  <span>AtkinsR&#233;alis</span>
+</div>
 <button id="filter-toggle" title="Toggle feature filter" aria-label="Toggle feature filter toolbar">
   <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
     <path d="M2 3h14l-5 5.5V15l-4-2V8.5z" fill="#555" stroke="#444" stroke-width="0.5" stroke-linejoin="round"/>
@@ -825,7 +974,23 @@ class WebMapExporter:
 (function() {{
   "use strict";
 
-  var map = L.map('map');
+  var map = L.map('map', {{
+    contextmenu: true,
+    contextmenuWidth: 180,
+    contextmenuItems: [
+      {{text: 'Centre map here',  callback: function(e) {{ map.panTo(e.latlng); }}}},
+      {{text: 'Zoom in',          callback: function(e) {{ map.zoomIn(); }}}},
+      {{text: 'Zoom out',         callback: function(e) {{ map.zoomOut(); }}}},
+      '-',
+      {{text: 'Copy lat, lon',    callback: function(e) {{
+        var t = e.latlng.lat.toFixed(6) + ', ' + e.latlng.lng.toFixed(6);
+        try {{ navigator.clipboard.writeText(t); }} catch(x) {{}}
+      }}}},
+      {{text: 'Fit to all data',  callback: function() {{
+        try {{ map.fitBounds(bounds, {{padding:[20,20]}}); }} catch(x) {{}}
+      }}}}
+    ]
+  }});
   var bounds = {bounds_json};
   var LAYERS = {layers_json};
   var INCLUDE_BASEMAP = {include_basemap};
@@ -839,6 +1004,87 @@ class WebMapExporter:
       maxZoom: 19
     }}).addTo(map);
   }}
+
+  // ── Scale bar (built-in) ──────────────────────────────────────────────────
+  L.control.scale({{position: 'bottomleft', imperial: true, metric: true}}).addTo(map);
+
+  // ── Fullscreen ────────────────────────────────────────────────────────────
+  if (typeof L.Control.Fullscreen !== 'undefined') {{
+    new L.Control.Fullscreen({{
+      position: 'topleft',
+      title: {{false: 'Enter fullscreen', true: 'Exit fullscreen'}}
+    }}).addTo(map);
+  }}
+
+  // ── Mini-map overview ─────────────────────────────────────────────────────
+  if (typeof L.Control.MiniMap !== 'undefined') {{
+    var miniTile = L.tileLayer(
+      'https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{maxZoom: 19}});
+    new L.Control.MiniMap(miniTile, {{
+      position: 'bottomright', toggleDisplay: true, minimized: true,
+      width: 160, height: 160
+    }}).addTo(map);
+  }}
+
+  // ── Measure ───────────────────────────────────────────────────────────────
+  if (typeof L.control.measure !== 'undefined') {{
+    L.control.measure({{
+      position: 'topleft',
+      primaryLengthUnit: 'kilometers', secondaryLengthUnit: 'meters',
+      primaryAreaUnit: 'sqkilometers',  secondaryAreaUnit: 'sqmeters',
+      activeColor: '#fb8c00', completedColor: '#1565c0'
+    }}).addTo(map);
+  }}
+
+  // ── Custom ruler ──────────────────────────────────────────────────────────
+  (function() {{
+    var measuring = false, points = [], line = null, tooltip = null;
+    var R = 6371e3; // earth radius metres
+    function haversine(a, b) {{
+      var φ1 = a.lat*Math.PI/180, φ2 = b.lat*Math.PI/180;
+      var Δφ = (b.lat-a.lat)*Math.PI/180, Δλ = (b.lng-a.lng)*Math.PI/180;
+      var x = Math.sin(Δφ/2)*Math.sin(Δφ/2)+Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)*Math.sin(Δλ/2);
+      return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
+    }}
+    function totalDist() {{
+      var d = 0; for (var i=1;i<points.length;i++) d+=haversine(points[i-1],points[i]); return d;
+    }}
+    function fmt(m) {{ return m>=1000?(m/1000).toFixed(2)+' km':m.toFixed(0)+' m'; }}
+    function startRuler() {{
+      measuring = true; points = [];
+      if (line) {{ map.removeLayer(line); line=null; }}
+      map.getContainer().classList.add('leaflet-ruler-active');
+    }}
+    function stopRuler() {{
+      measuring = false;
+      map.getContainer().classList.remove('leaflet-ruler-active');
+      if (tooltip) {{ map.closeTooltip(tooltip); tooltip=null; }}
+    }}
+    map.on('click', function(e) {{
+      if (!measuring) return;
+      points.push(e.latlng);
+      if (line) map.removeLayer(line);
+      if (points.length>=2) {{
+        line = L.polyline(points,{{color:'#e53935',weight:2,dashArray:'5,5'}}).addTo(map);
+        if (tooltip) map.closeTooltip(tooltip);
+        tooltip = L.tooltip({{permanent:true,className:'leaflet-ruler-tooltip',direction:'top'}})
+          .setLatLng(e.latlng).setContent(fmt(totalDist())).addTo(map);
+      }}
+    }});
+    map.on('contextmenu', function() {{ if (measuring) stopRuler(); }});
+
+    var RulerControl = L.Control.extend({{
+      onAdd: function() {{
+        var btn = L.DomUtil.create('button','leaflet-bar leaflet-ruler-btn');
+        btn.title = 'Ruler — click points to measure distance; right-click to finish';
+        btn.style.cssText='width:30px;height:30px;padding:0;border:none;border-radius:4px;';
+        L.DomEvent.on(btn,'click',L.DomEvent.stopPropagation);
+        L.DomEvent.on(btn,'click',function() {{ measuring ? stopRuler() : startRuler(); btn.style.background=measuring?'#fffde7':'white'; }});
+        return btn;
+      }}
+    }});
+    new RulerControl({{position:'topleft'}}).addTo(map);
+  }})();
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   function escHtml(s) {{
@@ -1076,10 +1322,19 @@ class WebMapExporter:
     var rows = Object.entries(feature.properties)
       .filter(function(e) {{ return e[1] != null; }})
       .map(function(e) {{
-        return '<tr><th style="text-align:left;padding:2px 8px 2px 0;white-space:nowrap">'
-          + escHtml(e[0]) + '</th><td style="padding:2px 0">' + escHtml(e[1]) + '</td></tr>';
+        return '<tr><th style="text-align:left;padding:2px 8px 2px 0;white-space:nowrap;color:#555;font-size:12px">'
+          + escHtml(e[0]) + '</th><td style="padding:2px 0;font-size:12px">' + escHtml(String(e[1])) + '</td></tr>';
       }}).join('');
-    if (rows) layer.bindPopup('<table style="font-size:13px;border-collapse:collapse">' + rows + '</table>');
+    if (rows) {{
+      var tbl = '<table style="border-collapse:collapse;width:100%">' + rows + '</table>';
+      layer.bindPopup(tbl);
+      layer.on('click', function() {{
+        var el = document.getElementById('feature-info-content');
+        if (el) el.innerHTML = tbl;
+        if (sidebar && sidebar.isVisible && !sidebar.isVisible()) sidebar.open('sb-info');
+        else if (sidebar && sidebar.open) sidebar.open('sb-info');
+      }});
+    }}
   }}
 
   // Build Leaflet layers and collect metadata for legend.
@@ -1097,6 +1352,76 @@ class WebMapExporter:
     item.lfl = buildLayer(item);
     item.lfl.addTo(map);
     legendItems.push(item);
+  }}
+
+  // ── Sidebar ───────────────────────────────────────────────────────────────
+  var sidebar = null;
+  if (typeof L.control.sidebar !== 'undefined') {{
+    sidebar = L.control.sidebar({{container: 'sidebar', position: 'left'}}).addTo(map);
+  }}
+
+  // ── Geoman draw controls ──────────────────────────────────────────────────
+  if (map.pm) {{
+    map.pm.addControls({{
+      position: 'topleft',
+      drawCircle: false, drawCircleMarker: false,
+      rotateMode: false, cutPolygon: false
+    }});
+    map.on('pm:create', function() {{
+      var el = document.getElementById('draw-count');
+      if (el) {{
+        var n = parseInt(el.dataset.n || '0', 10) + 1;
+        el.dataset.n = n;
+        el.textContent = n + ' feature' + (n === 1 ? '' : 's') + ' drawn';
+      }}
+    }});
+  }}
+  var _drawExportBtn = document.getElementById('draw-export-btn');
+  if (_drawExportBtn) {{
+    _drawExportBtn.addEventListener('click', function() {{
+      var feats = [];
+      if (map.pm) {{
+        map.pm.getGeomanDrawLayers().forEach(function(l) {{
+          if (l.toGeoJSON) feats.push(l.toGeoJSON());
+        }});
+      }}
+      if (!feats.length) {{ alert('No drawn features yet.'); return; }}
+      var data = JSON.stringify({{type: 'FeatureCollection', features: feats}}, null, 2);
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([data], {{type: 'application/json'}}));
+      a.download = 'drawn-features.geojson';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    }});
+  }}
+
+  // ── Feature search ────────────────────────────────────────────────────────
+  if (typeof L.Control.Search !== 'undefined') {{
+    var _searchFeats = [];
+    legendItems.forEach(function(it) {{
+      if (it.ld.kind !== 'vector') return;
+      it.ld.geojson.features.forEach(function(f) {{
+        if (!f.geometry || !f.properties) return;
+        var vals = Object.values(f.properties).filter(function(v) {{
+          return v != null && String(v).trim();
+        }});
+        if (!vals.length) return;
+        _searchFeats.push({{
+          type: 'Feature', geometry: f.geometry,
+          properties: {{_label: String(vals[0]), _layer: it.ld.name}}
+        }});
+      }});
+    }});
+    if (_searchFeats.length) {{
+      var _searchLayer = L.geoJSON({{type: 'FeatureCollection', features: _searchFeats}});
+      new L.Control.Search({{
+        layer: _searchLayer,
+        propertyName: '_label',
+        initial: false,
+        zoom: 16,
+        marker: false,
+        textPlaceholder: 'Search features…'
+      }}).addTo(map);
+    }}
   }}
 
   // ── Legend panel ─────────────────────────────────────────────────────────
