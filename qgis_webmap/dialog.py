@@ -1,10 +1,12 @@
 import os
+import datetime
 from qgis.PyQt.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QFileDialog, QLineEdit,
     QMessageBox, QProgressBar, QCheckBox, QGroupBox
 )
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import Qt, QStandardPaths, QUrl
+from qgis.PyQt.QtGui import QDesktopServices
 from qgis.core import QgsProject, QgsMapLayer
 
 
@@ -15,7 +17,23 @@ class WebMapExportDialog(QDialog):
         self.setWindowTitle("Export to Web Map")
         self.setMinimumWidth(480)
         self._build_ui()
+        self.path_edit.setText(self._default_output_path())
         self._populate_layers()
+
+    # ── Default output path ──────────────────────────────────────────────────
+
+    def _default_output_path(self):
+        downloads = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
+        if not downloads or not os.path.isdir(downloads):
+            downloads = os.path.expanduser("~")
+        ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        project_name = QgsProject.instance().baseName() or "webmap"
+        safe_name = "".join(
+            c if c.isalnum() or c in " _-." else "_" for c in project_name
+        ).strip() or "webmap"
+        return os.path.join(downloads, f"{ts} - {safe_name}.html")
+
+    # ── UI ───────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -81,7 +99,13 @@ class WebMapExportDialog(QDialog):
     def _populate_layers(self):
         self.layer_list.clear()
         root = QgsProject.instance().layerTreeRoot()
-        # Preserve layer order from legend (top to bottom)
+
+        # Layers currently selected (clicked) in the QGIS Layers panel
+        try:
+            selected_ids = {l.id() for l in self.iface.layerTreeView().selectedLayers()}
+        except Exception:
+            selected_ids = set()
+
         for tree_layer in root.findLayers():
             layer = tree_layer.layer()
             if layer is None:
@@ -91,7 +115,12 @@ class WebMapExportDialog(QDialog):
             item = QListWidgetItem(layer.name())
             item.setData(Qt.UserRole, layer.id())
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if tree_layer.isVisible() else Qt.Unchecked)
+            # Pre-check selected layers; fall back to visibility if nothing selected
+            if selected_ids:
+                checked = layer.id() in selected_ids
+            else:
+                checked = tree_layer.isVisible()
+            item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
             self.layer_list.addItem(item)
 
     def _select_all(self):
@@ -103,13 +132,17 @@ class WebMapExportDialog(QDialog):
             self.layer_list.item(i).setCheckState(Qt.Unchecked)
 
     def _browse(self):
+        current = self.path_edit.text().strip()
+        start_dir = os.path.dirname(current) if current else ""
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Web Map", "", "HTML Files (*.html);;All Files (*)"
+            self, "Save Web Map", start_dir, "HTML Files (*.html);;All Files (*)"
         )
         if path:
             if not path.lower().endswith(".html"):
                 path += ".html"
             self.path_edit.setText(path)
+
+    # ── Export ───────────────────────────────────────────────────────────────
 
     def _export(self):
         output_path = self.path_edit.text().strip()
@@ -151,13 +184,21 @@ class WebMapExportDialog(QDialog):
                 progress_callback=lambda v: self.progress.setValue(v),
             )
             exporter.export()
-            QMessageBox.information(
-                self, "Export complete",
-                f"Web map exported successfully to:\n{output_path}"
-            )
+            self._show_success(output_path)
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Export failed", str(e))
         finally:
             self.export_btn.setEnabled(True)
             self.progress.setVisible(False)
+
+    def _show_success(self, output_path):
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Export complete")
+        msg.setIcon(QMessageBox.Information)
+        msg.setText(f"Web map exported successfully to:\n{output_path}")
+        open_btn = msg.addButton("Open in Browser", QMessageBox.ActionRole)
+        msg.addButton(QMessageBox.Ok)
+        msg.exec_()
+        if msg.clickedButton() == open_btn:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(output_path))

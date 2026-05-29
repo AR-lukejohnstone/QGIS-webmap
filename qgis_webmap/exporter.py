@@ -775,10 +775,37 @@ class WebMapExporter:
     text-overflow: ellipsis;
   }}
   .filter-count {{ color: #888; font-size: 11px; }}
+
+  /* ── Filter toggle button ─────────────────────────────────────── */
+  #filter-toggle {{
+    position: absolute;
+    top: 80px; left: 10px;
+    z-index: 1000;
+    width: 34px; height: 34px;
+    background: white;
+    border: 2px solid rgba(0,0,0,0.2);
+    border-radius: 4px;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }}
+  #filter-toggle:hover {{ background: #f4f4f4; }}
+  #filter-toggle.active {{
+    background: #dde8ff;
+    border-color: rgba(50,100,255,0.4);
+  }}
 </style>
 </head>
 <body>
 <div id="map"></div>
+<button id="filter-toggle" title="Toggle feature filter" aria-label="Toggle feature filter toolbar">
+  <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
+    <path d="M2 3h14l-5 5.5V15l-4-2V8.5z" fill="#555" stroke="#444" stroke-width="0.5" stroke-linejoin="round"/>
+  </svg>
+</button>
 <div id="filterbar" style="display:none">
   <label>Filter</label>
   <select id="filter-layer" title="Layer"></select>
@@ -1273,6 +1300,7 @@ class WebMapExporter:
     if (vectorItems.length === 0) return;
 
     var bar          = document.getElementById('filterbar');
+    var toggleBtn    = document.getElementById('filter-toggle');
     var layerSel     = document.getElementById('filter-layer');
     var attrSel      = document.getElementById('filter-attr');
     var valuesBtn    = document.getElementById('filter-values-btn');
@@ -1281,7 +1309,16 @@ class WebMapExporter:
     var valuesList   = document.getElementById('filter-values-list');
     var clearBtn     = document.getElementById('filter-clear');
     var countEl      = document.getElementById('filter-count');
-    bar.style.display = 'flex';
+
+    // Show the toggle button; bar starts hidden until the button is clicked
+    if (toggleBtn) {{
+      toggleBtn.style.display = 'flex';
+      toggleBtn.addEventListener('click', function() {{
+        var isOpen = bar.style.display === 'flex';
+        bar.style.display = isOpen ? 'none' : 'flex';
+        toggleBtn.classList.toggle('active', !isOpen);
+      }});
+    }}
 
     // Populate layer dropdown (value = index into legendItems)
     vectorItems.forEach(function(it) {{
