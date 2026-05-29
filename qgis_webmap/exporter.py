@@ -58,15 +58,32 @@ def _qgis_fetch(url_str: str) -> str | None:
     return None
 
 
+_VENDOR_CSS = os.path.join(_PLUGIN_DIR, "vendor", "leaflet.css")
+_VENDOR_JS  = os.path.join(_PLUGIN_DIR, "vendor", "leaflet.js")
+
+
 def _get_leaflet_assets() -> tuple[str, str] | tuple[None, None]:
     """
-    Return (css, js) strings for inline embedding, downloading and caching
-    from CDN on first export. Returns (None, None) if unavailable.
+    Return (css, js) strings for inline embedding.
+
+    Priority:
+      1. Bundled vendor/ files shipped with the plugin (always available).
+      2. Previously downloaded + cached copy in lib/.
+      3. Download from CDN and cache in lib/.
+      4. Return (None, None) — caller falls back to CDN <link>/<script> tags.
     """
+    # 1. Bundled files — committed to the repo, always present
+    if os.path.exists(_VENDOR_CSS) and os.path.exists(_VENDOR_JS):
+        with open(_VENDOR_CSS, encoding="utf-8") as f:
+            css = f.read()
+        with open(_VENDOR_JS, encoding="utf-8") as f:
+            js = f.read()
+        return css, js
+
+    # 2. Previously cached download
     v        = _LEAFLET_VERSION
     css_path = os.path.join(_LIB_DIR, f"leaflet-{v}.min.css")
     js_path  = os.path.join(_LIB_DIR, f"leaflet-{v}.min.js")
-
     if os.path.exists(css_path) and os.path.exists(js_path):
         with open(css_path, encoding="utf-8") as f:
             css = f.read()
@@ -74,6 +91,7 @@ def _get_leaflet_assets() -> tuple[str, str] | tuple[None, None]:
             js = f.read()
         return css, js
 
+    # 3. Download and cache
     os.makedirs(_LIB_DIR, exist_ok=True)
     for tpl in _LEAFLET_URLS:
         css = _qgis_fetch(tpl.format(v=v, ext="css"))
