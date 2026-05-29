@@ -975,6 +975,7 @@ class WebMapExporter:
   "use strict";
 
   var map = L.map('map', {{
+    center: [0, 0], zoom: 2,
     contextmenu: true,
     contextmenuWidth: 180,
     contextmenuItems: [
@@ -1009,35 +1010,41 @@ class WebMapExporter:
   L.control.scale({{position: 'bottomleft', imperial: true, metric: true}}).addTo(map);
 
   // ── Fullscreen ────────────────────────────────────────────────────────────
-  if (typeof L.Control.Fullscreen !== 'undefined') {{
-    new L.Control.Fullscreen({{
-      position: 'topleft',
-      title: {{false: 'Enter fullscreen', true: 'Exit fullscreen'}}
-    }}).addTo(map);
-  }}
+  try {{
+    if (typeof L.Control.Fullscreen !== 'undefined') {{
+      new L.Control.Fullscreen({{
+        position: 'topleft',
+        title: {{false: 'Enter fullscreen', true: 'Exit fullscreen'}}
+      }}).addTo(map);
+    }}
+  }} catch(e) {{ console.warn('Fullscreen plugin error:', e); }}
 
   // ── Mini-map overview ─────────────────────────────────────────────────────
-  if (typeof L.Control.MiniMap !== 'undefined') {{
-    var miniTile = L.tileLayer(
-      'https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{maxZoom: 19}});
-    new L.Control.MiniMap(miniTile, {{
-      position: 'bottomright', toggleDisplay: true, minimized: true,
-      width: 160, height: 160
-    }}).addTo(map);
-  }}
+  try {{
+    if (typeof L.Control.MiniMap !== 'undefined') {{
+      var miniTile = L.tileLayer(
+        'https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{maxZoom: 19}});
+      new L.Control.MiniMap(miniTile, {{
+        position: 'bottomright', toggleDisplay: true, minimized: true,
+        width: 160, height: 160
+      }}).addTo(map);
+    }}
+  }} catch(e) {{ console.warn('MiniMap plugin error:', e); }}
 
   // ── Measure ───────────────────────────────────────────────────────────────
-  if (typeof L.control.measure !== 'undefined') {{
-    L.control.measure({{
-      position: 'topleft',
-      primaryLengthUnit: 'kilometers', secondaryLengthUnit: 'meters',
-      primaryAreaUnit: 'sqkilometers',  secondaryAreaUnit: 'sqmeters',
-      activeColor: '#fb8c00', completedColor: '#1565c0'
-    }}).addTo(map);
-  }}
+  try {{
+    if (typeof L.control.measure !== 'undefined') {{
+      L.control.measure({{
+        position: 'topleft',
+        primaryLengthUnit: 'kilometers', secondaryLengthUnit: 'meters',
+        primaryAreaUnit: 'sqkilometers',  secondaryAreaUnit: 'sqmeters',
+        activeColor: '#fb8c00', completedColor: '#1565c0'
+      }}).addTo(map);
+    }}
+  }} catch(e) {{ console.warn('Measure plugin error:', e); }}
 
   // ── Custom ruler ──────────────────────────────────────────────────────────
-  (function() {{
+  try {{ (function() {{
     var measuring = false, points = [], line = null, tooltip = null;
     var R = 6371e3; // earth radius metres
     function haversine(a, b) {{
@@ -1084,7 +1091,7 @@ class WebMapExporter:
       }}
     }});
     new RulerControl({{position:'topleft'}}).addTo(map);
-  }})();
+  }})(); }} catch(e) {{ console.warn('Ruler error:', e); }}
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   function escHtml(s) {{
@@ -1356,73 +1363,79 @@ class WebMapExporter:
 
   // ── Sidebar ───────────────────────────────────────────────────────────────
   var sidebar = null;
-  if (typeof L.control.sidebar !== 'undefined') {{
-    sidebar = L.control.sidebar({{container: 'sidebar', position: 'left'}}).addTo(map);
-  }}
+  try {{
+    if (typeof L.control.sidebar !== 'undefined') {{
+      sidebar = L.control.sidebar({{container: 'sidebar', position: 'left'}}).addTo(map);
+    }}
+  }} catch(e) {{ console.warn('Sidebar plugin error:', e); }}
 
   // ── Geoman draw controls ──────────────────────────────────────────────────
-  if (map.pm) {{
-    map.pm.addControls({{
-      position: 'topleft',
-      drawCircle: false, drawCircleMarker: false,
-      rotateMode: false, cutPolygon: false
-    }});
-    map.on('pm:create', function() {{
-      var el = document.getElementById('draw-count');
-      if (el) {{
-        var n = parseInt(el.dataset.n || '0', 10) + 1;
-        el.dataset.n = n;
-        el.textContent = n + ' feature' + (n === 1 ? '' : 's') + ' drawn';
-      }}
-    }});
-  }}
-  var _drawExportBtn = document.getElementById('draw-export-btn');
-  if (_drawExportBtn) {{
-    _drawExportBtn.addEventListener('click', function() {{
-      var feats = [];
-      if (map.pm) {{
-        map.pm.getGeomanDrawLayers().forEach(function(l) {{
-          if (l.toGeoJSON) feats.push(l.toGeoJSON());
-        }});
-      }}
-      if (!feats.length) {{ alert('No drawn features yet.'); return; }}
-      var data = JSON.stringify({{type: 'FeatureCollection', features: feats}}, null, 2);
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([data], {{type: 'application/json'}}));
-      a.download = 'drawn-features.geojson';
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    }});
-  }}
+  try {{
+    if (map.pm) {{
+      map.pm.addControls({{
+        position: 'topleft',
+        drawCircle: false, drawCircleMarker: false,
+        rotateMode: false, cutPolygon: false
+      }});
+      map.on('pm:create', function() {{
+        var el = document.getElementById('draw-count');
+        if (el) {{
+          var n = parseInt(el.dataset.n || '0', 10) + 1;
+          el.dataset.n = n;
+          el.textContent = n + ' feature' + (n === 1 ? '' : 's') + ' drawn';
+        }}
+      }});
+    }}
+    var _drawExportBtn = document.getElementById('draw-export-btn');
+    if (_drawExportBtn) {{
+      _drawExportBtn.addEventListener('click', function() {{
+        var feats = [];
+        if (map.pm) {{
+          map.pm.getGeomanDrawLayers().forEach(function(l) {{
+            if (l.toGeoJSON) feats.push(l.toGeoJSON());
+          }});
+        }}
+        if (!feats.length) {{ alert('No drawn features yet.'); return; }}
+        var data = JSON.stringify({{type: 'FeatureCollection', features: feats}}, null, 2);
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([data], {{type: 'application/json'}}));
+        a.download = 'drawn-features.geojson';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      }});
+    }}
+  }} catch(e) {{ console.warn('Geoman plugin error:', e); }}
 
   // ── Feature search ────────────────────────────────────────────────────────
-  if (typeof L.Control.Search !== 'undefined') {{
-    var _searchFeats = [];
-    legendItems.forEach(function(it) {{
-      if (it.ld.kind !== 'vector') return;
-      it.ld.geojson.features.forEach(function(f) {{
-        if (!f.geometry || !f.properties) return;
-        var vals = Object.values(f.properties).filter(function(v) {{
-          return v != null && String(v).trim();
-        }});
-        if (!vals.length) return;
-        _searchFeats.push({{
-          type: 'Feature', geometry: f.geometry,
-          properties: {{_label: String(vals[0]), _layer: it.ld.name}}
+  try {{
+    if (typeof L.Control.Search !== 'undefined') {{
+      var _searchFeats = [];
+      legendItems.forEach(function(it) {{
+        if (it.ld.kind !== 'vector') return;
+        it.ld.geojson.features.forEach(function(f) {{
+          if (!f.geometry || !f.properties) return;
+          var vals = Object.values(f.properties).filter(function(v) {{
+            return v != null && String(v).trim();
+          }});
+          if (!vals.length) return;
+          _searchFeats.push({{
+            type: 'Feature', geometry: f.geometry,
+            properties: {{_label: String(vals[0]), _layer: it.ld.name}}
+          }});
         }});
       }});
-    }});
-    if (_searchFeats.length) {{
-      var _searchLayer = L.geoJSON({{type: 'FeatureCollection', features: _searchFeats}});
-      new L.Control.Search({{
-        layer: _searchLayer,
-        propertyName: '_label',
-        initial: false,
-        zoom: 16,
-        marker: false,
-        textPlaceholder: 'Search features…'
-      }}).addTo(map);
+      if (_searchFeats.length) {{
+        var _searchLayer = L.geoJSON({{type: 'FeatureCollection', features: _searchFeats}});
+        new L.Control.Search({{
+          layer: _searchLayer,
+          propertyName: '_label',
+          initial: false,
+          zoom: 16,
+          marker: false,
+          textPlaceholder: 'Search features…'
+        }}).addTo(map);
+      }}
     }}
-  }}
+  }} catch(e) {{ console.warn('Search plugin error:', e); }}
 
   // ── Legend panel ─────────────────────────────────────────────────────────
   if (INCLUDE_LEGEND && legendItems.length > 0) {{
