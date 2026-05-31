@@ -569,11 +569,10 @@ def _geom_type_str(layer) -> str:
 
 
 class WebMapExporter:
-    def __init__(self, layers, output_path, include_basemap=True,
+    def __init__(self, layers, output_path,
                  include_layer_control=True, progress_callback=None):
         self.layers = layers
         self.output_path = output_path
-        self.include_basemap = include_basemap
         self.include_layer_control = include_layer_control
         self.progress = progress_callback or (lambda v: None)
 
@@ -665,7 +664,6 @@ class WebMapExporter:
             "</", "<\\/"
         )
         bounds_json = json.dumps(bounds)
-        include_basemap = "true" if self.include_basemap else "false"
         include_legend = "true" if self.include_layer_control else "false"
 
         leaflet_css, leaflet_js = _get_leaflet_assets()
@@ -1105,17 +1103,13 @@ class WebMapExporter:
   try {{ map.fitBounds(bounds, {{padding: [20, 20]}}); }}
   catch(e) {{ map.setView([0, 0], 2); }}
   var LAYERS = {layers_json};
-  var INCLUDE_BASEMAP = {include_basemap};
   var INCLUDE_LEGEND = {include_legend};
 
-  // ── Basemap ──────────────────────────────────────────────────────────────
-  var basemap = null;
-  if (INCLUDE_BASEMAP) {{
-    basemap = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-      maxZoom: 19
-    }}).addTo(map);
-  }}
+  // ── Basemap (always present) ──────────────────────────────────────────────
+  var basemap = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    maxZoom: 19
+  }}).addTo(map);
 
   // ── Scale bar (built-in) ──────────────────────────────────────────────────
   L.control.scale({{position: 'bottomleft', imperial: true, metric: true}}).addTo(map);
@@ -1658,23 +1652,13 @@ class WebMapExporter:
       item.layerDiv = layerDiv;
     }});
 
-    // ── Basemap entry ──────────────────────────────────────────────────────
-    if (basemap) {{
+    // ── Basemap entry (opacity only — always present, no visibility toggle) ──
+    (function() {{
       var bDiv = document.createElement('div');
       bDiv.className = 'legend-layer';
 
       var bRow = document.createElement('div');
       bRow.className = 'legend-layer-row';
-
-      var bCb = document.createElement('input');
-      bCb.type = 'checkbox';
-      bCb.checked = true;
-      bCb.title = 'Toggle basemap';
-      bCb.addEventListener('change', function() {{
-        if (bCb.checked) basemap.addTo(map);
-        else map.removeLayer(basemap);
-        bDiv.classList.toggle('hidden', !bCb.checked);
-      }});
 
       var bSwatch = document.createElement('span');
       bSwatch.className = 'legend-swatch';
@@ -1706,14 +1690,13 @@ class WebMapExporter:
       bOpRow.appendChild(bSlider);
       bSettingsDiv.appendChild(bOpRow);
 
-      bRow.appendChild(bCb);
       bRow.appendChild(bSwatch);
       bRow.appendChild(bName);
       bRow.appendChild(makeCogBtn(bSettingsDiv));
       bDiv.appendChild(bRow);
       bDiv.appendChild(bSettingsDiv);
       body.appendChild(bDiv);
-    }}
+    }})();
   }}
 
   function setLayerVisible(item, visible) {{
