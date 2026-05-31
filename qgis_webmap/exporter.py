@@ -702,11 +702,21 @@ class WebMapExporter:
             _plugin_block("contextmenu"),
         ]))
 
-        # Brand watermark — use logo.png from vendor/ if present, else SVG fallback
+        # Brand watermark — prefer logo.svg, fall back to logo.png, then built-in SVG
         import base64 as _b64
-        _logo_path = os.path.join(_PLUGIN_DIR, "vendor", "logo.png")
-        if os.path.exists(_logo_path):
-            with open(_logo_path, "rb") as _f:
+        _logo_svg  = os.path.join(_PLUGIN_DIR, "vendor", "logo.svg")
+        _logo_png  = os.path.join(_PLUGIN_DIR, "vendor", "logo.png")
+        if os.path.exists(_logo_svg):
+            with open(_logo_svg, encoding="utf-8") as _f:
+                _svg_src = _f.read().strip()
+            # Wrap in a sized container so height is constrained
+            brand_content = (
+                f'<span style="height:22px;display:flex;align-items:center;">'
+                f'{_svg_src}</span>'
+            )
+        elif os.path.exists(_logo_png):
+            import base64 as _b64
+            with open(_logo_png, "rb") as _f:
                 _logo_b64 = _b64.b64encode(_f.read()).decode("utf-8")
             brand_content = (
                 f'<img src="data:image/png;base64,{_logo_b64}"'
@@ -1005,7 +1015,7 @@ class WebMapExporter:
     pointer-events: none;
     user-select: none;
   }}
-  #brand-watermark svg {{ display: block; flex-shrink: 0; }}
+  #brand-watermark svg {{ display: block; flex-shrink: 0; max-height: 22px; }}
   #brand-watermark span {{
     font-family: Arial, sans-serif;
     font-size: 11px;
