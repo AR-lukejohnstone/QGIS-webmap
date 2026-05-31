@@ -124,8 +124,6 @@ _PLUGIN_SPECS = {
     "minimap":     ("minimap.min.css",     "minimap.min.js"),
     "search":      ("search.min.css",      "search.min.js"),
     "contextmenu": ("contextmenu.min.css", "contextmenu.min.js"),
-    "sidebar":     ("sidebar.min.css",     "sidebar.min.js"),
-    "measure":     ("measure.min.css",     "measure.min.js"),
     "geoman":      ("geoman.min.css",      "geoman.min.js"),
 }
 
@@ -353,6 +351,7 @@ def _extract_symbol_style(symbol) -> dict:
             style["markerColor"] = _color_to_hex(color)
             style["markerOpacity"] = round(color.alphaF() * sym_opacity, 3)
             style["markerStrokeColor"] = _color_to_hex(stroke_color)
+            style["markerStrokeOpacity"] = round(stroke_color.alphaF() * sym_opacity, 3)
             try:
                 no_stroke = sl.strokeStyle() == Qt.NoPen
             except Exception:
@@ -364,7 +363,7 @@ def _extract_symbol_style(symbol) -> dict:
                     sw_px = _size_to_px(sl.strokeWidth(), sl.strokeWidthUnit())
                 except Exception:
                     sw_px = 1.0
-                style["markerStrokeWidth"] = round(max(0.0, sw_px), 1)
+                style["markerStrokeWidth"] = round(max(0.5, sw_px), 1)
             style["markerSize"] = max(4, round(_size_to_px(sl.size(), sl.sizeUnit())))
             style["markerShape"] = _encode_marker_shape(sl)
             try:
@@ -570,11 +569,13 @@ def _geom_type_str(layer) -> str:
 
 class WebMapExporter:
     def __init__(self, layers, output_path,
-                 include_layer_control=True, progress_callback=None):
+                 include_layer_control=True, progress_callback=None,
+                 layer_tree=None):
         self.layers = layers
         self.output_path = output_path
         self.include_layer_control = include_layer_control
         self.progress = progress_callback or (lambda v: None)
+        self.layer_tree = layer_tree or []
 
     def export(self):
         layer_defs = []
@@ -665,6 +666,7 @@ class WebMapExporter:
         )
         bounds_json = json.dumps(bounds)
         include_legend = "true" if self.include_layer_control else "false"
+        tree_json = json.dumps(self.layer_tree, separators=(",", ":")).replace("</", "<\\/")
 
         leaflet_css, leaflet_js = _get_leaflet_assets()
         if leaflet_css and leaflet_js:
@@ -698,8 +700,6 @@ class WebMapExporter:
             _plugin_block("fullscreen"),
             _plugin_block("minimap"),
             _plugin_block("contextmenu"),
-            _plugin_block("sidebar"),
-            _plugin_block("measure"),
         ]))
 
         # Brand watermark — use logo.png from vendor/ if present, else SVG fallback
@@ -714,10 +714,9 @@ class WebMapExporter:
             )
         else:
             brand_content = (
-                '<svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">'
-                '<rect width="22" height="22" rx="3" fill="#003057"/>'
-                '<path d="M4 16 L11 5 L18 16 H14 L11 11 L8 16 Z" fill="#00a9a0"/>'
-                '<rect x="7" y="13" width="8" height="1.5" fill="#003057"/>'
+                '<svg width="26" height="22" viewBox="0 0 26 22" xmlns="http://www.w3.org/2000/svg">'
+                '<polygon points="13,1 25,21 1,21" fill="none" stroke="#e63329" stroke-width="2.2"/>'
+                '<line x1="7.5" y1="14" x2="18.5" y2="14" stroke="#e63329" stroke-width="2.2"/>'
                 '</svg>'
                 '<span>AtkinsRéalis</span>'
             )
@@ -830,6 +829,19 @@ class WebMapExporter:
   .legend-swatch svg {{ display: block; }}
   .legend-layer.hidden .legend-layer-name {{ opacity: 0.45; }}
   .qgis-marker {{ background: none; border: none; }}
+
+  /* ── Legend group styles ──────────────────────────────────────────── */
+  .legend-group {{ }}
+  .legend-group-hdr {{
+    display: flex; align-items: center; gap: 5px;
+    padding: 5px 10px 3px;
+    cursor: pointer; user-select: none;
+    border-top: 1px solid #eee;
+  }}
+  .legend-group-hdr:hover {{ background: #f5f5f5; }}
+  .legend-group-name {{ font-size: 12px; font-weight: 600; color: #333; }}
+  .legend-group-body {{ padding-left: 8px; }}
+  .legend-group-body:not(.open) {{ display: none; }}
 
   /* ── Layer cog button ─────────────────────────────────────────── */
   .legend-cog-btn {{
@@ -1003,59 +1015,53 @@ class WebMapExporter:
     line-height: 1;
   }}
 
-  /* ── Custom ruler control ──────────────────────────────────────── */
-  .leaflet-ruler-btn {{
-    background: white url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Crect x='2' y='8' width='16' height='4' rx='1' fill='none' stroke='%23555' stroke-width='1.2'/%3E%3Cline x1='5' y1='8' x2='5' y2='6' stroke='%23555' stroke-width='1'/%3E%3Cline x1='9' y1='8' x2='9' y2='6.5' stroke='%23555' stroke-width='1'/%3E%3Cline x1='13' y1='8' x2='13' y2='6' stroke='%23555' stroke-width='1'/%3E%3C/svg%3E") center/20px no-repeat;
-    cursor: pointer;
+  /* ── Feature info panel */
+  #info-panel {{
+    display: none;
+    position: absolute;
+    left: 10px; bottom: 60px;
+    z-index: 1001;
+    background: rgba(255,255,255,0.97);
+    border: 1px solid #bbb;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+    min-width: 200px; max-width: 320px;
+    max-height: calc(100vh - 180px);
+    flex-direction: column;
+    overflow: hidden;
   }}
-  .leaflet-ruler-tooltip {{
-    background: rgba(0,0,0,0.75);
-    color: #fff;
-    padding: 3px 7px;
-    border-radius: 4px;
-    font-size: 12px;
-    white-space: nowrap;
-    pointer-events: none;
+  #info-panel.open {{ display: flex; }}
+  #info-panel-hdr {{
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 7px 10px 6px; background: #f0f0f0;
+    border-bottom: 1px solid #ddd; border-radius: 6px 6px 0 0;
+    user-select: none;
   }}
-  .leaflet-ruler-active {{ cursor: crosshair !important; }}
-
-  /* ── Sidebar custom tweaks ─────────────────────────────────────── */
-  .leaflet-sidebar .feature-table {{
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 12px;
+  #info-panel-hdr span {{ font-weight: bold; font-size: 13px; color: #333; }}
+  #info-panel-close {{
+    background: none; border: none; cursor: pointer;
+    font-size: 14px; color: #888; padding: 0 2px; line-height: 1;
   }}
-  .leaflet-sidebar .feature-table th {{
-    text-align: left;
-    padding: 3px 8px 3px 0;
-    color: #555;
-    font-weight: 600;
-    white-space: nowrap;
-    vertical-align: top;
+  #info-panel-close:hover {{ color: #333; }}
+  #info-panel-body {{
+    padding: 8px 12px; overflow-y: auto; flex: 1;
+    font-size: 12px; color: #666;
   }}
-  .leaflet-sidebar .feature-table td {{
-    padding: 3px 0;
-    word-break: break-word;
-    color: #222;
+  #info-panel-body table {{ border-collapse: collapse; width: 100%; }}
+  #info-panel-body th {{
+    text-align: left; padding: 2px 8px 2px 0;
+    color: #555; font-weight: 600; white-space: nowrap; vertical-align: top;
   }}
+  #info-panel-body td {{ padding: 2px 0; word-break: break-word; color: #222; }}
 </style>
 </head>
 <body>
-<div id="sidebar" class="leaflet-sidebar collapsed">
-  <div class="leaflet-sidebar-tabs">
-    <ul role="tablist">
-      <li><a href="#sb-info" role="tab" title="Feature info">&#9432;</a></li>
-    </ul>
-    <ul role="tablist"></ul>
+<div id="info-panel">
+  <div id="info-panel-hdr">
+    <span>Feature Info</span>
+    <button id="info-panel-close" title="Close">&#10005;</button>
   </div>
-  <div class="leaflet-sidebar-content">
-    <div class="leaflet-sidebar-pane" id="sb-info">
-      <h1 class="leaflet-sidebar-header">Feature Info<span class="leaflet-sidebar-close">&#10005;</span></h1>
-      <div id="feature-info-content" style="padding:12px;font-size:13px;color:#666">
-        Click a map feature to see its attributes here.
-      </div>
-    </div>
-  </div>
+  <div id="info-panel-body">Click a map feature to see its attributes.</div>
 </div>
 <div id="map"></div>
 <div id="brand-watermark">
@@ -1104,6 +1110,7 @@ class WebMapExporter:
   catch(e) {{ map.setView([0, 0], 2); }}
   var LAYERS = {layers_json};
   var INCLUDE_LEGEND = {include_legend};
+  var LAYER_TREE = {tree_json};
 
   // ── Basemap (always present) ──────────────────────────────────────────────
   var basemap = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
@@ -1205,9 +1212,11 @@ class WebMapExporter:
 
   // Return the inner SVG element(s) for a marker shape centred at (cx, cy)
   // with circumradius r. Used by both map markers and legend swatches.
-  function shapeSvgInner(shape, cx, cy, r, fill, fillOp, stroke, strokeW) {{
+  function shapeSvgInner(shape, cx, cy, r, fill, fillOp, stroke, strokeW, strokeOp) {{
+    if (strokeOp == null) strokeOp = 1;
     var attrs = ' fill="' + escHtml(fill) + '" fill-opacity="' + fillOp + '"'
-              + ' stroke="' + escHtml(stroke) + '" stroke-width="' + strokeW + '"';
+              + ' stroke="' + escHtml(stroke) + '" stroke-width="' + strokeW + '"'
+              + ' stroke-opacity="' + strokeOp + '"';
     function poly(pts) {{
       return '<polygon points="' + pts.map(function(p) {{ return p[0] + ',' + p[1]; }}).join(' ') + '"' + attrs + '/>';
     }}
