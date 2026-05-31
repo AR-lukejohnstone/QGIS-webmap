@@ -24,6 +24,13 @@ try:
 except ImportError:
     _QgsSimpleMarkerBase = None
 
+try:
+    from qgis.core import QgsPalLayerSettings as _QgsPalLayerSettings
+    _HAS_PAL = True
+except ImportError:
+    _QgsPalLayerSettings = None
+    _HAS_PAL = False
+
 
 _WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 
@@ -238,6 +245,45 @@ def _encode_marker_shape(sl) -> str:
         return "circle"
 
 
+def _extract_label_config(layer) -> dict | None:
+    """Extract label settings from a vector layer. Returns None if no label field is set."""
+    if not _HAS_PAL:
+        return None
+    try:
+        if not hasattr(layer, "labeling") or layer.labeling() is None:
+            return None
+        labeling = layer.labeling()
+        if not hasattr(labeling, "settings"):
+            return None
+        settings = labeling.settings()
+        field = settings.fieldName
+        if not field:
+            return None
+        fmt = settings.format()
+        font = fmt.font()
+        color = fmt.color()
+        font_px = max(8, round(_size_to_px(fmt.size(), fmt.sizeUnit())))
+        cfg: dict = {
+            "field":       field,
+            "isExpr":      bool(settings.isExpression),
+            "enabled":     bool(layer.labelsEnabled()),
+            "fontSize":    font_px,
+            "fontColor":   _color_to_hex(color),
+            "fontOpacity": round(float(fmt.opacity()), 3),
+            "fontFamily":  font.family() or "sans-serif",
+            "bold":        bool(font.bold()),
+            "italic":      bool(font.italic()),
+        }
+        buf = fmt.buffer()
+        if hasattr(buf, "enabled") and buf.enabled():
+            bc = buf.color()
+            cfg["bufferSize"]  = max(1, round(_size_to_px(buf.size(), buf.sizeUnit())))
+            cfg["bufferColor"] = _color_to_hex(bc)
+        return cfg
+    except Exception:
+        return None
+
+
 def _extract_symbol_style(symbol) -> dict:
     """Extract Leaflet path/marker style from a QGIS symbol."""
     style = {}
@@ -281,6 +327,24 @@ def _extract_symbol_style(symbol) -> dict:
             style["opacity"] = round(color.alphaF() * sym_opacity, 3)
             style["weight"] = round(max(0.5, _size_to_px(sl.width(), sl.widthUnit())), 1)
             style["fillOpacity"] = 0
+            try:
+                pen = sl.penStyle()
+                if pen == Qt.DashLine:
+                    style["dashArray"] = "8 4"
+                elif pen == Qt.DotLine:
+                    style["dashArray"] = "2 4"
+                elif pen == Qt.DashDotLine:
+                    style["dashArray"] = "8 4 2 4"
+                elif pen == Qt.DashDotDotLine:
+                    style["dashArray"] = "8 4 2 4 2 4"
+                elif pen == Qt.CustomDashLine:
+                    dv = sl.customDashVector()
+                    unit = sl.customDashPatternUnit()
+                    parts = [str(round(_size_to_px(v, unit), 1)) for v in dv]
+                    if parts:
+                        style["dashArray"] = " ".join(parts)
+            except Exception:
+                pass
             break
 
         elif isinstance(sl, QgsSimpleMarkerSymbolLayer):
@@ -525,13 +589,17 @@ class WebMapExporter:
                 geojson = _layer_to_geojson(layer)
                 style_map = _build_style_map(layer)
                 geom_type = _geom_type_str(layer)
-                layer_defs.append({
-                    "kind": "vector",
-                    "name": layer.name(),
+                ldef: dict = {
+                    "kind":     "vector",
+                    "name":     layer.name(),
                     "geomType": geom_type,
-                    "geojson": geojson,
+                    "geojson":  geojson,
                     "styleMap": style_map,
-                })
+                }
+                label_cfg = _extract_label_config(layer)
+                if label_cfg:
+                    ldef["labelConfig"] = label_cfg
+                layer_defs.append(ldef)
 
             elif layer.type() == QgsMapLayer.RasterLayer:
                 wms = _parse_wms_source(layer)
@@ -763,15 +831,51 @@ class WebMapExporter:
   }}
   .legend-swatch svg {{ display: block; }}
   .legend-layer.hidden .legend-layer-name {{ opacity: 0.45; }}
-  .legend-opacity {{
+  .qgis-marker {{ background: none; border: none; }}
+
+  /* ── Layer cog button ─────────────────────────────────────────── */
+  .legend-cog-btn {{
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px 3px;
+    color: #aaa;
+    border-radius: 3px;
+    line-height: 1;
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 0 10px 5px 26px;
   }}
-  .legend-opacity-label {{ font-size: 10px; color: #888; flex-shrink: 0; }}
-  .legend-opacity input[type=range] {{ flex: 1; height: 14px; cursor: pointer; }}
-  .qgis-marker {{ background: none; border: none; }}
+  .legend-cog-btn:hover {{ color: #444; background: #e8e8e8; }}
+  .legend-cog-btn.active {{ color: #1e6bb8; background: #ddeeff; }}
+
+  /* ── Per-layer settings panel ─────────────────────────────────── */
+  .layer-settings {{
+    display: none;
+    padding: 4px 10px 6px 26px;
+    border-top: 1px solid #eee;
+    background: #fafafa;
+  }}
+  .layer-settings.open {{ display: block; }}
+  .layer-settings-row {{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+  }}
+  .layer-settings-label {{ font-size: 11px; color: #555; min-width: 52px; flex-shrink: 0; }}
+  .layer-settings-row input[type=range] {{ flex: 1; height: 14px; cursor: pointer; }}
+  .layer-settings-row input[type=checkbox] {{ margin: 0; cursor: pointer; }}
+
+  /* ── Feature labels ───────────────────────────────────────────── */
+  .leaflet-tooltip.qgis-label {{
+    background: none;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    pointer-events: none;
+  }}
+  .leaflet-tooltip.qgis-label::before {{ display: none; }}
 
   /* ── Filter toolbar ───────────────────────────────────────────── */
   #filterbar {{
@@ -1318,6 +1422,10 @@ class WebMapExporter:
     if (item.lfl) map.removeLayer(item.lfl);
     item.lfl = buildLayer(item);
     if (wasVisible) item.lfl.addTo(map);
+    if (item.ld.labelConfig) {{
+      buildLabels(item);
+      setLayerLabels(item, item.labelsVisible);
+    }}
   }}
 
   function onEachFeature(feature, layer) {{
@@ -1348,12 +1456,22 @@ class WebMapExporter:
     var paneName = 'layerPane' + i;
     map.createPane(paneName);
     map.getPane(paneName).style.zIndex = 400 + i;
+
+    var labelPaneName = 'labelPane' + i;
+    map.createPane(labelPaneName);
+    map.getPane(labelPaneName).style.zIndex = 650 + i;
+    map.getPane(labelPaneName).style.pointerEvents = 'none';
+
     var item = {{
-      ld: LAYERS[i], paneName: paneName, visible: true,
-      filterFn: null, lfl: null, index: i
+      ld: LAYERS[i], paneName: paneName, labelPaneName: labelPaneName,
+      visible: true, labelsVisible: false, filterFn: null, lfl: null, index: i
     }};
     item.lfl = buildLayer(item);
     item.lfl.addTo(map);
+    if (item.ld.labelConfig) {{
+      buildLabels(item);
+      if (item.ld.labelConfig.enabled) setLayerLabels(item, true);
+    }}
     legendItems.push(item);
   }}
 
@@ -1393,12 +1511,37 @@ class WebMapExporter:
     // Legend items are shown top-to-bottom (reverse of draw order)
     var displayItems = legendItems.slice().reverse();
 
+    var COG_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor">'
+      + '<path d="M12 15.5a3.5 3.5 0 0 1-3.5-3.5 3.5 3.5 0 0 1 3.5-3.5 3.5 3.5 0 0 1 3.5 3.5 3.5 3.5 0 0 1-3.5 3.5m7.43-2.92c.04-.32.07-.64.07-.97s-.03-.66-.07-1l2.16-1.68c.19-.15.24-.42.12-.64l-2.04-3.53c-.12-.22-.39-.3-.61-.22l-2.55 1.03c-.52-.4-1.08-.73-1.69-.98l-.38-2.72C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.72c-.61.25-1.17.59-1.69.98l-2.55-1.03c-.22-.08-.49 0-.61.22L2.74 8.87c-.13.22-.07.49.12.64L5.02 11.19c-.04.34-.07.67-.07 1s.03.65.07.97L2.86 14.84c-.19.15-.24.42-.12.64l2.04 3.53c.12.22.39.3.61.22l2.55-1.03c.52.4 1.08.73 1.69.98l.38 2.72c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.72c.61-.25 1.17-.58 1.69-.98l2.55 1.03c.22.08.49 0 .61-.22l2.04-3.53c.12-.22.07-.49-.12-.64l-2.16-1.68z"/>'
+      + '</svg>';
+
+    function makeCogBtn(settingsDiv) {{
+      var btn = document.createElement('button');
+      btn.className = 'legend-cog-btn';
+      btn.title = 'Layer settings';
+      btn.innerHTML = COG_SVG;
+      btn.addEventListener('click', function(e) {{
+        e.stopPropagation();
+        var isOpen = settingsDiv.classList.toggle('open');
+        btn.classList.toggle('active', isOpen);
+        if (isOpen) {{
+          document.querySelectorAll('.layer-settings.open').forEach(function(el) {{
+            if (el !== settingsDiv) el.classList.remove('open');
+          }});
+          document.querySelectorAll('.legend-cog-btn.active').forEach(function(el) {{
+            if (el !== btn) el.classList.remove('active');
+          }});
+        }}
+      }});
+      return btn;
+    }}
+
     displayItems.forEach(function(item) {{
       var ld = item.ld;
       var sm = ld.styleMap || {{}};
       var geomType = (ld.kind === 'raster' || ld.kind === 'wms') ? 'raster' : ld.geomType;
+      var cfg = ld.labelConfig || null;
 
-      // Primary swatch: use first entry or the single style
       var primaryStyle = {{}};
       if (sm.type === 'single') primaryStyle = sm.style || {{}};
       else if (sm.entries && sm.entries.length) primaryStyle = sm.entries[0].style || {{}};
@@ -1408,7 +1551,7 @@ class WebMapExporter:
       var layerDiv = document.createElement('div');
       layerDiv.className = 'legend-layer';
 
-      // Main row
+      // ── Main row ─────────────────────────────────────────────────────
       var row = document.createElement('div');
       row.className = 'legend-layer-row';
 
@@ -1416,6 +1559,9 @@ class WebMapExporter:
       cb.type = 'checkbox';
       cb.checked = true;
       cb.title = 'Toggle layer visibility';
+      cb.addEventListener('change', function() {{
+        setLayerVisible(item, cb.checked);
+      }});
 
       var swatch = document.createElement('span');
       swatch.className = 'legend-swatch';
@@ -1430,16 +1576,22 @@ class WebMapExporter:
       row.appendChild(swatch);
       row.appendChild(nameEl);
 
+      // ── Expand button (categories) ────────────────────────────────────
       var entriesDiv = null;
       if (hasEntries) {{
         var expBtn = document.createElement('span');
         expBtn.className = 'legend-expand';
         expBtn.textContent = '▶';
+        expBtn.title = 'Expand / collapse categories';
+        expBtn.addEventListener('click', function(e) {{
+          e.stopPropagation();
+          var open = entriesDiv.classList.toggle('open');
+          expBtn.style.transform = open ? 'rotate(90deg)' : '';
+        }});
         row.appendChild(expBtn);
 
         entriesDiv = document.createElement('div');
         entriesDiv.className = 'legend-entries';
-
         sm.entries.forEach(function(entry) {{
           var eRow = document.createElement('div');
           eRow.className = 'legend-entry';
@@ -1454,46 +1606,59 @@ class WebMapExporter:
           eRow.appendChild(eLabel);
           entriesDiv.appendChild(eRow);
         }});
-
-        row.addEventListener('click', function(e) {{
-          if (e.target === cb) return;
-          var open = entriesDiv.classList.toggle('open');
-          expBtn.style.transform = open ? 'rotate(90deg)' : '';
-        }});
       }}
 
-      // Checkbox toggles layer visibility
-      cb.addEventListener('change', function() {{
-        setLayerVisible(item, cb.checked);
-        layerDiv.classList.toggle('hidden', !cb.checked);
-      }});
+      // ── Settings panel (behind cog) ───────────────────────────────────
+      var settingsDiv = document.createElement('div');
+      settingsDiv.className = 'layer-settings';
 
-      layerDiv.appendChild(row);
-
-      // Opacity / transparency slider
+      // Opacity row
       var opRow = document.createElement('div');
-      opRow.className = 'legend-opacity';
-      var opLabel = document.createElement('span');
-      opLabel.className = 'legend-opacity-label';
-      opLabel.textContent = 'Opacity';
+      opRow.className = 'layer-settings-row';
+      var opLbl = document.createElement('span');
+      opLbl.className = 'layer-settings-label';
+      opLbl.textContent = 'Opacity';
       var slider = document.createElement('input');
       slider.type = 'range';
       slider.min = '0'; slider.max = '100'; slider.value = '100';
-      slider.title = 'Layer transparency';
+      slider.title = 'Layer opacity';
       slider.addEventListener('input', function() {{
         setLayerOpacity(item, parseInt(slider.value, 10) / 100);
       }});
-      opRow.appendChild(opLabel);
+      opRow.appendChild(opLbl);
       opRow.appendChild(slider);
-      layerDiv.appendChild(opRow);
+      settingsDiv.appendChild(opRow);
 
+      // Labels row (only for vector layers that have a label field)
+      if (cfg && ld.kind === 'vector') {{
+        var lblRow = document.createElement('div');
+        lblRow.className = 'layer-settings-row';
+        var lblLbl = document.createElement('span');
+        lblLbl.className = 'layer-settings-label';
+        lblLbl.textContent = 'Labels';
+        var lblCb = document.createElement('input');
+        lblCb.type = 'checkbox';
+        lblCb.checked = cfg.enabled || false;
+        lblCb.title = 'Toggle feature labels';
+        lblCb.addEventListener('change', function() {{
+          setLayerLabels(item, lblCb.checked);
+        }});
+        lblRow.appendChild(lblLbl);
+        lblRow.appendChild(lblCb);
+        settingsDiv.appendChild(lblRow);
+      }}
+
+      row.appendChild(makeCogBtn(settingsDiv));
+
+      layerDiv.appendChild(row);
       if (entriesDiv) layerDiv.appendChild(entriesDiv);
+      layerDiv.appendChild(settingsDiv);
       body.appendChild(layerDiv);
       item.checkbox = cb;
       item.layerDiv = layerDiv;
     }});
 
-    // ── Basemap entry (OpenStreetMap) with transparency slider ───────────────
+    // ── Basemap entry ──────────────────────────────────────────────────────
     if (basemap) {{
       var bDiv = document.createElement('div');
       bDiv.className = 'legend-layer';
@@ -1523,27 +1688,30 @@ class WebMapExporter:
       bName.textContent = 'OpenStreetMap';
       bName.title = 'OpenStreetMap basemap';
 
-      bRow.appendChild(bCb);
-      bRow.appendChild(bSwatch);
-      bRow.appendChild(bName);
-      bDiv.appendChild(bRow);
-
+      var bSettingsDiv = document.createElement('div');
+      bSettingsDiv.className = 'layer-settings';
       var bOpRow = document.createElement('div');
-      bOpRow.className = 'legend-opacity';
-      var bOpLabel = document.createElement('span');
-      bOpLabel.className = 'legend-opacity-label';
-      bOpLabel.textContent = 'Opacity';
+      bOpRow.className = 'layer-settings-row';
+      var bOpLbl = document.createElement('span');
+      bOpLbl.className = 'layer-settings-label';
+      bOpLbl.textContent = 'Opacity';
       var bSlider = document.createElement('input');
       bSlider.type = 'range';
       bSlider.min = '0'; bSlider.max = '100'; bSlider.value = '100';
-      bSlider.title = 'Basemap transparency';
+      bSlider.title = 'Basemap opacity';
       bSlider.addEventListener('input', function() {{
         basemap.setOpacity(parseInt(bSlider.value, 10) / 100);
       }});
-      bOpRow.appendChild(bOpLabel);
+      bOpRow.appendChild(bOpLbl);
       bOpRow.appendChild(bSlider);
-      bDiv.appendChild(bOpRow);
+      bSettingsDiv.appendChild(bOpRow);
 
+      bRow.appendChild(bCb);
+      bRow.appendChild(bSwatch);
+      bRow.appendChild(bName);
+      bRow.appendChild(makeCogBtn(bSettingsDiv));
+      bDiv.appendChild(bRow);
+      bDiv.appendChild(bSettingsDiv);
       body.appendChild(bDiv);
     }}
   }}
@@ -1554,11 +1722,62 @@ class WebMapExporter:
     else map.removeLayer(item.lfl);
     if (item.checkbox) item.checkbox.checked = visible;
     if (item.layerDiv) item.layerDiv.classList.toggle('hidden', !visible);
+    var lp = map.getPane(item.labelPaneName);
+    if (lp) lp.style.display = (visible && item.labelsVisible) ? '' : 'none';
   }}
 
   function setLayerOpacity(item, factor) {{
     var pane = map.getPane(item.paneName);
     if (pane) pane.style.opacity = factor;
+  }}
+
+  function setLayerLabels(item, visible) {{
+    item.labelsVisible = visible;
+    var pane = map.getPane(item.labelPaneName);
+    if (pane) pane.style.display = (item.visible && visible) ? '' : 'none';
+  }}
+
+  function buildLabels(item) {{
+    var ld = item.ld;
+    if (!ld.labelConfig || ld.kind !== 'vector') return;
+    var cfg = ld.labelConfig;
+    var fontSz = cfg.fontSize || 11;
+    var bufSz  = cfg.bufferSize  || 0;
+    var bufCol = cfg.bufferColor || '#ffffff';
+    var tsh = '';
+    if (bufSz > 0) {{
+      var b = bufSz;
+      tsh = 'text-shadow:'
+          + b+'px '+b+'px 0 '+bufCol+','
+          + (-b)+'px '+b+'px 0 '+bufCol+','
+          + b+'px '+(-b)+'px 0 '+bufCol+','
+          + (-b)+'px '+(-b)+'px 0 '+bufCol+','
+          + '0 '+b+'px 0 '+bufCol+','
+          + '0 '+(-b)+'px 0 '+bufCol+','
+          + b+'px 0 0 '+bufCol+','
+          + (-b)+'px 0 0 '+bufCol+';';
+    }}
+    var fontStyle = 'font-size:'+fontSz+'px;color:'+cfg.fontColor+';'
+      + 'font-family:'+(cfg.fontFamily||'sans-serif')+';'
+      + (cfg.bold  ?'font-weight:bold;':'')
+      + (cfg.italic?'font-style:italic;':'')
+      + tsh + 'white-space:nowrap;';
+    var dir = ld.geomType === 'point' ? 'top' : 'center';
+    item.lfl.eachLayer(function(fl) {{
+      var props = fl.feature && fl.feature.properties;
+      if (!props) return;
+      var val = props[cfg.field];
+      if (val == null || val === '') return;
+      fl.bindTooltip(
+        '<span style="'+fontStyle+'">'+escHtml(String(val))+'</span>',
+        {{ permanent: true, direction: dir, className: 'qgis-label',
+           opacity: cfg.fontOpacity != null ? cfg.fontOpacity : 1,
+           pane: item.labelPaneName }}
+      );
+    }});
+    // Keep pane hidden until explicitly enabled
+    var lp = map.getPane(item.labelPaneName);
+    if (lp) lp.style.display = item.labelsVisible ? '' : 'none';
   }}
 
   // ── Filter toolbar ─────────────────────────────────────────────────────────
