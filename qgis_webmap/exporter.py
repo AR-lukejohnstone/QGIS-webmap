@@ -1159,17 +1159,34 @@ class WebMapExporter:
 
   function makeMarker(latlng, style, paneName) {{
     var size = style.markerSize || 8;
+    var shape = style.markerShape || 'circle';
     var fill = style.markerColor || '#3388ff';
     var fillOp = style.markerOpacity != null ? style.markerOpacity : 0.9;
-    var stroke = style.markerStrokeColor || '#ffffff';
+    var stroke = style.markerStrokeColor || '#555555';
     var strokeW = style.markerStrokeWidth != null ? style.markerStrokeWidth : 1;
-    var copts = {{
-      radius: size / 2,
-      fillColor: fill, fillOpacity: fillOp,
-      color: stroke, weight: strokeW, opacity: 1
-    }};
-    if (paneName) copts.pane = paneName;
-    return L.circleMarker(latlng, copts);
+    if (shape === 'circle') {{
+      var copts = {{
+        radius: size / 2,
+        fillColor: fill, fillOpacity: fillOp,
+        color: stroke, weight: strokeW, opacity: 1
+      }};
+      if (paneName) copts.pane = paneName;
+      return L.circleMarker(latlng, copts);
+    }}
+    var pad = Math.max(strokeW, 1) + 2;
+    var box = size + pad * 2;
+    var c = box / 2, r = size / 2;
+    var inner = shapeSvgInner(shape, c, c, r, fill, fillOp, stroke, strokeW);
+    var angle = style.markerAngle || 0;
+    var rot = angle ? ' transform="rotate(' + angle + ' ' + c + ' ' + c + ')"' : '';
+    var svg = '<svg width="' + box + '" height="' + box
+            + '" xmlns="http://www.w3.org/2000/svg" style="overflow:visible">'
+            + '<g' + rot + '>' + inner + '</g></svg>';
+    var icon = L.divIcon({{ html: svg, className: 'qgis-marker',
+                            iconSize: [box, box], iconAnchor: [c, c] }});
+    var mopts = {{ icon: icon }};
+    if (paneName) mopts.pane = paneName;
+    return L.marker(latlng, mopts);
   }}
 
   function resolveStyle(styleMap, props) {{
