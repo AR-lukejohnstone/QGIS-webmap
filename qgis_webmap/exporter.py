@@ -1143,67 +1143,6 @@ class WebMapExporter:
     }}
   }} catch(e) {{ console.warn('MiniMap plugin error:', e); }}
 
-  // ── Measure ───────────────────────────────────────────────────────────────
-  try {{
-    if (typeof L.control.measure !== 'undefined') {{
-      L.control.measure({{
-        position: 'topleft',
-        primaryLengthUnit: 'kilometers', secondaryLengthUnit: 'meters',
-        primaryAreaUnit: 'sqkilometers',  secondaryAreaUnit: 'sqmeters',
-        activeColor: '#fb8c00', completedColor: '#1565c0'
-      }}).addTo(map);
-    }}
-  }} catch(e) {{ console.warn('Measure plugin error:', e); }}
-
-  // ── Custom ruler ──────────────────────────────────────────────────────────
-  try {{ (function() {{
-    var measuring = false, points = [], line = null, tooltip = null;
-    var R = 6371e3; // earth radius metres
-    function haversine(a, b) {{
-      var φ1 = a.lat*Math.PI/180, φ2 = b.lat*Math.PI/180;
-      var Δφ = (b.lat-a.lat)*Math.PI/180, Δλ = (b.lng-a.lng)*Math.PI/180;
-      var x = Math.sin(Δφ/2)*Math.sin(Δφ/2)+Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)*Math.sin(Δλ/2);
-      return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
-    }}
-    function totalDist() {{
-      var d = 0; for (var i=1;i<points.length;i++) d+=haversine(points[i-1],points[i]); return d;
-    }}
-    function fmt(m) {{ return m>=1000?(m/1000).toFixed(2)+' km':m.toFixed(0)+' m'; }}
-    function startRuler() {{
-      measuring = true; points = [];
-      if (line) {{ map.removeLayer(line); line=null; }}
-      map.getContainer().classList.add('leaflet-ruler-active');
-    }}
-    function stopRuler() {{
-      measuring = false;
-      map.getContainer().classList.remove('leaflet-ruler-active');
-      if (tooltip) {{ map.closeTooltip(tooltip); tooltip=null; }}
-    }}
-    map.on('click', function(e) {{
-      if (!measuring) return;
-      points.push(e.latlng);
-      if (line) map.removeLayer(line);
-      if (points.length>=2) {{
-        line = L.polyline(points,{{color:'#e53935',weight:2,dashArray:'5,5'}}).addTo(map);
-        if (tooltip) map.closeTooltip(tooltip);
-        tooltip = L.tooltip({{permanent:true,className:'leaflet-ruler-tooltip',direction:'top'}})
-          .setLatLng(e.latlng).setContent(fmt(totalDist())).addTo(map);
-      }}
-    }});
-    map.on('contextmenu', function() {{ if (measuring) stopRuler(); }});
-
-    var RulerControl = L.Control.extend({{
-      onAdd: function() {{
-        var btn = L.DomUtil.create('button','leaflet-bar leaflet-ruler-btn');
-        btn.title = 'Ruler — click points to measure distance; right-click to finish';
-        btn.style.cssText='width:30px;height:30px;padding:0;border:none;border-radius:4px;';
-        L.DomEvent.on(btn,'click',L.DomEvent.stopPropagation);
-        L.DomEvent.on(btn,'click',function() {{ measuring ? stopRuler() : startRuler(); btn.style.background=measuring?'#fffde7':'white'; }});
-        return btn;
-      }}
-    }});
-    new RulerControl({{position:'topleft'}}).addTo(map);
-  }})(); }} catch(e) {{ console.warn('Ruler error:', e); }}
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   function escHtml(s) {{
@@ -1271,11 +1210,12 @@ class WebMapExporter:
     var fillOp = style.markerOpacity != null ? style.markerOpacity : 0.9;
     var stroke = style.markerStrokeColor || '#555555';
     var strokeW = style.markerStrokeWidth != null ? style.markerStrokeWidth : 1;
+    var strokeOp = (style.markerStrokeOpacity != null) ? style.markerStrokeOpacity : 1;
     if (shape === 'circle') {{
       var copts = {{
         radius: size / 2,
         fillColor: fill, fillOpacity: fillOp,
-        color: stroke, weight: strokeW, opacity: 1
+        color: stroke, weight: strokeW, opacity: strokeOp
       }};
       if (paneName) copts.pane = paneName;
       return L.circleMarker(latlng, copts);
@@ -1283,7 +1223,7 @@ class WebMapExporter:
     var pad = Math.max(strokeW, 1) + 2;
     var box = size + pad * 2;
     var c = box / 2, r = size / 2;
-    var inner = shapeSvgInner(shape, c, c, r, fill, fillOp, stroke, strokeW);
+    var inner = shapeSvgInner(shape, c, c, r, fill, fillOp, stroke, strokeW, strokeOp);
     var angle = style.markerAngle || 0;
     var rot = angle ? ' transform="rotate(' + angle + ' ' + c + ' ' + c + ')"' : '';
     var svg = '<svg width="' + box + '" height="' + box
@@ -1345,7 +1285,8 @@ class WebMapExporter:
         style.markerColor || '#3388ff',
         style.markerOpacity != null ? style.markerOpacity : 0.9,
         style.markerStrokeColor || '#666',
-        Math.min(1.5, style.markerStrokeWidth != null ? style.markerStrokeWidth : 1)
+        Math.min(1.5, style.markerStrokeWidth != null ? style.markerStrokeWidth : 1),
+        style.markerStrokeOpacity != null ? style.markerStrokeOpacity : 1
       );
     }} else if (geomType === 'line') {{
       var w = Math.min(5, Math.max(1, style.weight || 2));
@@ -1436,17 +1377,13 @@ class WebMapExporter:
     var rows = Object.entries(feature.properties)
       .filter(function(e) {{ return e[1] != null; }})
       .map(function(e) {{
-        return '<tr><th style="text-align:left;padding:2px 8px 2px 0;white-space:nowrap;color:#555;font-size:12px">'
-          + escHtml(e[0]) + '</th><td style="padding:2px 0;font-size:12px">' + escHtml(String(e[1])) + '</td></tr>';
+        return '<tr><th>' + escHtml(e[0]) + '</th><td>' + escHtml(String(e[1])) + '</td></tr>';
       }}).join('');
     if (rows) {{
-      var tbl = '<table style="border-collapse:collapse;width:100%">' + rows + '</table>';
-      layer.bindPopup(tbl);
+      var tbl = '<table>' + rows + '</table>';
       layer.on('click', function() {{
-        var el = document.getElementById('feature-info-content');
-        if (el) el.innerHTML = tbl;
-        if (sidebar && sidebar.isVisible && !sidebar.isVisible()) sidebar.open('sb-info');
-        else if (sidebar && sidebar.open) sidebar.open('sb-info');
+        infoPanelBody.innerHTML = tbl;
+        infoPanel.classList.add('open');
       }});
     }}
   }}
@@ -1478,13 +1415,24 @@ class WebMapExporter:
     legendItems.push(item);
   }}
 
-  // ── Sidebar ───────────────────────────────────────────────────────────────
-  var sidebar = null;
-  try {{
-    if (typeof L.control.sidebar !== 'undefined') {{
-      sidebar = L.control.sidebar({{container: 'sidebar', position: 'left'}}).addTo(map);
+  // ── Feature info panel ───────────────────────────────────────────────────
+  var infoPanel = document.getElementById('info-panel');
+  var infoPanelBody = document.getElementById('info-panel-body');
+  document.getElementById('info-panel-close').addEventListener('click', function() {{
+    infoPanel.classList.remove('open');
+  }});
+  var InfoBtn = L.Control.extend({{
+    onAdd: function() {{
+      var btn = L.DomUtil.create('button', 'leaflet-bar leaflet-control');
+      btn.title = 'Feature info';
+      btn.style.cssText = 'width:30px;height:30px;padding:0;border:none;font-size:16px;cursor:pointer;background:white;border-radius:4px;';
+      btn.innerHTML = '&#9432;';
+      L.DomEvent.disableClickPropagation(btn);
+      L.DomEvent.on(btn, 'click', function() {{ infoPanel.classList.toggle('open'); }});
+      return btn;
     }}
-  }} catch(e) {{ console.warn('Sidebar plugin error:', e); }}
+  }});
+  new InfoBtn({{position: 'topleft'}}).addTo(map);
 
 
   // ── Legend panel ─────────────────────────────────────────────────────────
@@ -1539,7 +1487,7 @@ class WebMapExporter:
       return btn;
     }}
 
-    displayItems.forEach(function(item) {{
+    function buildLayerRow(item, container) {{
       var ld = item.ld;
       var sm = ld.styleMap || {{}};
       var geomType = (ld.kind === 'raster' || ld.kind === 'wms') ? 'raster' : ld.geomType;
@@ -1656,10 +1604,51 @@ class WebMapExporter:
       layerDiv.appendChild(row);
       if (entriesDiv) layerDiv.appendChild(entriesDiv);
       layerDiv.appendChild(settingsDiv);
-      body.appendChild(layerDiv);
+      container.appendChild(layerDiv);
       item.checkbox = cb;
       item.layerDiv = layerDiv;
-    }});
+    }}
+
+    function buildLegendNodes(nodes, container) {{
+      nodes.forEach(function(node) {{
+        if (node.type === 'group') {{
+          var grpDiv = document.createElement('div');
+          grpDiv.className = 'legend-group';
+          var grpHdr = document.createElement('div');
+          grpHdr.className = 'legend-group-hdr';
+          var grpExp = document.createElement('span');
+          grpExp.className = 'legend-expand';
+          grpExp.textContent = '▼';
+          var grpName = document.createElement('span');
+          grpName.className = 'legend-group-name';
+          grpName.textContent = node.name;
+          grpHdr.appendChild(grpExp);
+          grpHdr.appendChild(grpName);
+          var grpBody = document.createElement('div');
+          grpBody.className = 'legend-group-body open';
+          grpHdr.addEventListener('click', function() {{
+            var open = grpBody.classList.toggle('open');
+            grpExp.textContent = open ? '▼' : '▶';
+          }});
+          grpDiv.appendChild(grpHdr);
+          grpDiv.appendChild(grpBody);
+          container.appendChild(grpDiv);
+          buildLegendNodes(node.children, grpBody);
+        }} else {{
+          // find matching displayItem by index
+          var item = displayItems[node.index];
+          if (item) buildLayerRow(item, container);
+        }}
+      }});
+    }}
+
+    if (LAYER_TREE.length > 0) {{
+      buildLegendNodes(LAYER_TREE, body);
+    }} else {{
+      displayItems.forEach(function(item) {{
+        buildLayerRow(item, body);
+      }});
+    }}
 
     // ── Basemap entry (opacity only — always present, no visibility toggle) ──
     (function() {{

@@ -7,7 +7,7 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.PyQt.QtCore import Qt, QStandardPaths, QUrl
 from qgis.PyQt.QtGui import QDesktopServices
-from qgis.core import QgsProject, QgsMapLayer
+from qgis.core import QgsProject, QgsMapLayer, QgsLayerTreeGroup, QgsLayerTreeLayer
 
 
 class WebMapExportDialog(QDialog):
@@ -103,30 +103,45 @@ class WebMapExportDialog(QDialog):
         except Exception:
             selected_ids = set()
 
-        for tree_layer in root.findLayers():
-            layer = tree_layer.layer()
-            if layer is None:
-                continue
-            if layer.type() not in (QgsMapLayer.VectorLayer, QgsMapLayer.RasterLayer):
-                continue
-            item = QListWidgetItem(layer.name())
-            item.setData(Qt.UserRole, layer.id())
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            # Pre-check selected layers; fall back to visibility if nothing selected
-            if selected_ids:
-                checked = layer.id() in selected_ids
-            else:
-                checked = tree_layer.isVisible()
-            item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
-            self.layer_list.addItem(item)
+        def add_nodes(node, indent=0):
+            for child in node.children():
+                if isinstance(child, QgsLayerTreeGroup):
+                    # Add a non-checkable group header
+                    grp_item = QListWidgetItem("  " * indent + "▸ " + child.name())
+                    grp_item.setFlags(grp_item.flags() & ~Qt.ItemIsUserCheckable & ~Qt.ItemIsSelectable)
+                    # No Qt.UserRole set — signals this is a group header
+                    self.layer_list.addItem(grp_item)
+                    add_nodes(child, indent + 1)
+                elif isinstance(child, QgsLayerTreeLayer):
+                    layer = child.layer()
+                    if layer is None:
+                        continue
+                    if layer.type() not in (QgsMapLayer.VectorLayer, QgsMapLayer.RasterLayer):
+                        continue
+                    item = QListWidgetItem("  " * indent + layer.name())
+                    item.setData(Qt.UserRole, layer.id())
+                    item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                    # Pre-check selected layers; fall back to visibility if nothing selected
+                    if selected_ids:
+                        checked = layer.id() in selected_ids
+                    else:
+                        checked = child.isVisible()
+                    item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                    self.layer_list.addItem(item)
+
+        add_nodes(root)
 
     def _select_all(self):
         for i in range(self.layer_list.count()):
-            self.layer_list.item(i).setCheckState(Qt.Checked)
+            item = self.layer_list.item(i)
+            if item.data(Qt.UserRole) is not None:
+                item.setCheckState(Qt.Checked)
 
     def _deselect_all(self):
         for i in range(self.layer_list.count()):
-            self.layer_list.item(i).setCheckState(Qt.Unchecked)
+            item = self.layer_list.item(i)
+            if item.data(Qt.UserRole) is not None:
+                item.setCheckState(Qt.Unchecked)
 
     def _browse(self):
         current = self.path_edit.text().strip()
@@ -150,21 +165,33 @@ class WebMapExportDialog(QDialog):
         selected_ids = []
         for i in range(self.layer_list.count()):
             item = self.layer_list.item(i)
-            if item.checkState() == Qt.Checked:
+            if item.data(Qt.UserRole) is not None and item.checkState() == Qt.Checked:
                 selected_ids.append(item.data(Qt.UserRole))
 
         if not selected_ids:
             QMessageBox.warning(self, "No layers", "Please select at least one layer to export.")
             return
 
-        layers = []
-        for layer_id in selected_ids:
-            layer = QgsProject.instance().mapLayer(layer_id)
-            if layer:
-                layers.append(layer)
+        # Build layer list and tree structure by traversing the QGIS layer tree
+        selected_id_set = {lid for lid in selected_ids if lid}
+        panel_layers = []
+        tree_nodes = []
 
-        # Reverse so bottom layers render first in Leaflet
-        layers = list(reversed(layers))
+        def walk(node, out):
+            for child in node.children():
+                if isinstance(child, QgsLayerTreeGroup):
+                    grp_children = []
+                    walk(child, grp_children)
+                    if grp_children:
+                        out.append({"type": "group", "name": child.name(), "children": grp_children})
+                elif isinstance(child, QgsLayerTreeLayer):
+                    layer = child.layer()
+                    if layer and layer.id() in selected_id_set:
+                        out.append({"type": "layer", "index": len(panel_layers)})
+                        panel_layers.append(layer)
+
+        walk(QgsProject.instance().layerTreeRoot(), tree_nodes)
+        layers = list(reversed(panel_layers))
 
         self.export_btn.setEnabled(False)
         self.progress.setVisible(True)
@@ -178,6 +205,7 @@ class WebMapExportDialog(QDialog):
                 output_path=output_path,
                 include_layer_control=self.layer_control_cb.isChecked(),
                 progress_callback=lambda v: self.progress.setValue(v),
+                layer_tree=tree_nodes,
             )
             exporter.export()
             self._show_success(output_path)
